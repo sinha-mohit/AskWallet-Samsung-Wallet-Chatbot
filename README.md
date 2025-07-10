@@ -20,9 +20,15 @@ pipenv shell
 exit
 
 
-pipenv install langchain langchain_community langchain_huggingface faiss-cpu pypdf python-dotenv
-pipenv install huggingface_hub
-pipenv install streamlit
+pipenv install langchain langchain_community langchain_huggingface faiss-cpu pypdf python-dotenv huggingface_hub streamlit
+pipenv install "numpy>=1.23.5,<2.3.0"
+
+
+### commands to run
+pipenv run python create_memory_for_llm.py
+pipenv run python connect_memory_with_llm.py
+
+streamlit run ask_wallet.py
 
 
 
