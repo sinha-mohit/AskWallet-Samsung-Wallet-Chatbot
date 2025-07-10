@@ -21,7 +21,7 @@ exit
 
 
 pipenv install langchain langchain_community langchain_huggingface faiss-cpu pypdf python-dotenv huggingface_hub streamlit
-pipenv install "numpy>=1.23.5,<2.3.0"
+pipenv install "numpy>=1.23.5,<2.3.0" sentence-transformers==2.2.2
 
 
 ### commands to run

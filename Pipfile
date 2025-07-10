@@ -12,6 +12,7 @@ langchain = "*"
 langchain-community = "*"
 langchain-huggingface = "*"
 python-dotenv = "*"
+sentence-transformers = "*"
 
 [dev-packages]
 
