@@ -3,16 +3,18 @@ import streamlit as st
 import traceback
 from dotenv import load_dotenv, find_dotenv
 
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.chains import RetrievalQA
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
+from huggingface_hub import InferenceClient
 
 # ✅ Load environment variables
 load_dotenv(find_dotenv())
 HF_TOKEN = os.environ.get("HF_TOKEN")
 DB_FAISS_PATH = "vectorstore/db_faiss"
-HUGGINGFACE_REPO_ID = "meta-llama/Meta-Llama-3-8B-Instruct"  # ✅ LLaMA 3
+# MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"  # works with chat API
+MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"  # Use LLaMA 3 for higher quality responses (optional):
 
 # ✅ Load FAISS vectorstore
 def get_vectorstore():
@@ -21,84 +23,83 @@ def get_vectorstore():
         db = FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
         return db
     except Exception as e:
-        st.error("Failed to load FAISS vector store.")
+        st.error("❌ Failed to load FAISS vector store.")
         st.exception(e)
-        print(traceback.format_exc())
         return None
 
-# ✅ Create a custom prompt template
+# ✅ Custom prompt template for RAG
 def set_custom_prompt():
     return PromptTemplate(
         template="""
-Use the information from the context to answer the user's question.
-Only use information from the context. If unsure, say "I don't know".
+Use the pieces of information provided in the context to answer user's question.
+If you dont know the answer, just say that you dont know, dont try to make up an answer. 
+Dont provide anything out of the given context. Start the answer directly. No small talk please.
 
-Context:
-{context}
-
-Question:
-{question}
+Context: {context}
+Question: {question}
 
 Answer:
 """,
         input_variables=["context", "question"]
     )
 
-# ✅ Load LLaMA 3 from HuggingFace Endpoint
-def load_llm(repo_id, hf_token):
-    if not hf_token:
-        st.error("Missing HF_TOKEN in .env")
-        st.stop()
-
-    return HuggingFaceEndpoint(
-        repo_id=repo_id,
-        max_new_tokens=512,
-        temperature=0.7,
-        huggingfacehub_api_token=hf_token
+# ✅ Call HuggingFace Inference Client
+def call_hf_chat(prompt):
+    client = InferenceClient(model=MODEL_ID, token=HF_TOKEN)
+    response = client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ]
     )
+    return response.choices[0].message.content
 
-# ✅ Main app logic
+# ✅ Format documents with metadata
+def format_source_documents(docs):
+    return "\n\n".join([
+        f"📄 **{doc.metadata.get('source', 'Unknown Source')}**\n{doc.page_content.strip()}"
+        for doc in docs
+    ])
+
+# ✅ Main Streamlit App
 def main():
-    st.title("Ask Wallet Chatbot (LLaMA 3)")
+    st.set_page_config(page_title="Ask Wallet Chatbot", page_icon="💬")
+    st.title("🧠 Ask Wallet AI Assistant")
 
-    if 'messages' not in st.session_state:
+    if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
-        st.chat_message(message['role']).markdown(message['content'])
+    for msg in st.session_state.messages:
+        st.chat_message(msg["role"]).markdown(msg["content"])
 
-    prompt = st.chat_input("Ask your question...")
+    user_prompt = st.chat_input("💬 Ask your question here...")
 
-    if prompt:
-        st.chat_message('user').markdown(prompt)
-        st.session_state.messages.append({'role': 'user', 'content': prompt})
+    if user_prompt:
+        st.chat_message("user").markdown(user_prompt)
+        st.session_state.messages.append({"role": "user", "content": user_prompt})
 
         try:
-            with st.spinner("Thinking..."):
+            with st.spinner("🔍 Searching and generating answer..."):
                 vectorstore = get_vectorstore()
                 if not vectorstore:
                     return
 
-                qa_chain = RetrievalQA.from_chain_type(
-                    llm=load_llm(HUGGINGFACE_REPO_ID, HF_TOKEN),
-                    chain_type="stuff",
-                    retriever=vectorstore.as_retriever(search_kwargs={'k': 3}),
-                    return_source_documents=True,
-                    chain_type_kwargs={'prompt': set_custom_prompt()}
-                )
+                retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                docs = retriever.invoke(user_prompt)
 
-                response = qa_chain.invoke({'query': prompt})
-                result = response.get("result", "No response from model.")
-                source_documents = response.get("source_documents", [])
+                context = "\n\n".join([doc.page_content for doc in docs])
+                prompt_template = set_custom_prompt()
+                final_prompt = prompt_template.format(context=context, question=user_prompt)
 
-                source_texts = "\n\n".join([doc.page_content for doc in source_documents])
-                response_display = f"{result}\n\n---\n**Source Documents:**\n{source_texts}"
+                answer = call_hf_chat(final_prompt)
+                source_texts = format_source_documents(docs)
 
+                response_display = f"🧠 **Answer:**\n\n{answer}\n\n---\n**🔗 Source Documents:**\n{source_texts}"
                 st.chat_message("assistant").markdown(response_display)
-                st.session_state.messages.append({'role': 'assistant', 'content': response_display})
+                st.session_state.messages.append({"role": "assistant", "content": response_display})
 
         except Exception as e:
-            st.error("Something went wrong:")
+            st.error("❌ An error occurred.")
             st.exception(e)
             print(traceback.format_exc())
 
