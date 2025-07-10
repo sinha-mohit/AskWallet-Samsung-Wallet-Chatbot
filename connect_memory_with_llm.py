@@ -13,16 +13,17 @@ load_dotenv(find_dotenv())
 
 # Step 1: Setup LLM (Mistral with HuggingFace)
 HF_TOKEN=os.environ.get("HF_TOKEN")
-HUGGINGFACE_REPO_ID="mistralai/Mistral-7B-Instruct-v0.3"
+HUGGINGFACE_REPO_ID="HuggingFaceTB/SmolLM3-3B"
 
 def load_llm(huggingface_repo_id):
-    llm=HuggingFaceEndpoint(
+    if not HF_TOKEN:
+        raise ValueError("Missing `HF_TOKEN` in your environment variables. Please set it in your .env file.")
+    return HuggingFaceEndpoint(
         repo_id=huggingface_repo_id,
+        max_new_tokens=256,
         temperature=0.5,
-        model_kwargs={"token":HF_TOKEN,
-                      "max_length":"512"}
+        huggingfacehub_api_token=HF_TOKEN
     )
-    return llm
 
 # Step 2: Connect LLM with FAISS and Create chain
 

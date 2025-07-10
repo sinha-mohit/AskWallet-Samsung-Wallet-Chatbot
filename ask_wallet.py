@@ -11,8 +11,15 @@ from langchain_core.prompts import PromptTemplate
 # ✅ Load environment variables
 load_dotenv(find_dotenv())
 HF_TOKEN = os.environ.get("HF_TOKEN")
-
 DB_FAISS_PATH = "vectorstore/db_faiss"
+
+ # ✅ Valid open-source model for text-generation
+# HUGGINGFACE_REPO_ID = "mistralai/Mistral-7B-Instruct-v0.3" # old
+# HUGGINGFACE_REPO_ID = "tiiuae/falcon-7b-instruct"
+# HUGGINGFACE_REPO_ID = "mosaicml/mpt-7b-instruct"  # Newer, more capable model
+# HUGGINGFACE_REPO_ID = "google/flan-t5-xxl"
+# HUGGINGFACE_REPO_ID = "databricks/dolly-v2-12b"  # Llama 2 chat model
+HUGGINGFACE_REPO_ID = "tiiuae/falcon-7b-instruct"
 
 def get_vectorstore():
     try:
@@ -36,7 +43,7 @@ def load_llm(huggingface_repo_id, HF_TOKEN):
 
     return HuggingFaceEndpoint(
         repo_id=huggingface_repo_id,
-        max_new_tokens=150,
+        max_new_tokens=256,
         temperature=0.5,
         huggingfacehub_api_token=HF_TOKEN
     )
@@ -67,10 +74,7 @@ def main():
         Start the answer directly. No small talk please.
         """
 
-        # ✅ Valid open-source model for text-generation
-        # HUGGINGFACE_REPO_ID = "mistralai/Mistral-7B-Instruct-v0.3" # old
-        HUGGINGFACE_REPO_ID = "tiiuae/falcon-7b-instruct"
-        # HUGGINGFACE_REPO_ID = "google/flan-t5-xxl"
+       
 
         try:
             with st.spinner("Generating response..."):
