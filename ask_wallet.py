@@ -1,43 +1,45 @@
 import os
 import streamlit as st
+import traceback
 from dotenv import load_dotenv, find_dotenv
 
-from langchain_huggingface import HuggingFaceEmbeddings
-
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
 from langchain.chains import RetrievalQA
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
-from langchain_huggingface import HuggingFaceEndpoint
 
-# ✅ Load environment variables from .env file
-from dotenv import load_dotenv, find_dotenv
+# ✅ Load environment variables
 load_dotenv(find_dotenv())
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
 DB_FAISS_PATH = "vectorstore/db_faiss"
 
-# @st.cache_resource
 def get_vectorstore():
-    embedding_model = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
-    db = FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
-    return db
+    try:
+        st.info("Loading vectorstore...")
+        embedding_model = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
+        db = FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
+        return db
+    except Exception as e:
+        st.error("Failed to load FAISS vector store.")
+        st.exception(e)
+        print(traceback.format_exc())
+        return None
 
 def set_custom_prompt(custom_prompt_template):
-    prompt = PromptTemplate(template=custom_prompt_template, input_variables=["context", "question"])
-    return prompt
+    return PromptTemplate(template=custom_prompt_template, input_variables=["context", "question"])
 
 def load_llm(huggingface_repo_id, HF_TOKEN):
     if not HF_TOKEN:
-        st.error("Missing HF_TOKEN environment variable. Please set it in your .env file.")
+        st.error("Missing `HF_TOKEN` in your .env file or environment variables.")
         st.stop()
 
-    llm=HuggingFaceEndpoint(
-        repo_id = huggingface_repo_id,
-        max_new_tokens = 150,
-        temperature = 0.5,
-        huggingfacehub_api_token = HF_TOKEN
+    return HuggingFaceEndpoint(
+        repo_id=huggingface_repo_id,
+        max_new_tokens=150,
+        temperature=0.5,
+        huggingfacehub_api_token=HF_TOKEN
     )
-    return llm
-
 
 def main():
     st.title("Ask Wallet Chatbot!")
@@ -65,20 +67,24 @@ def main():
         Start the answer directly. No small talk please.
         """
 
+        # ✅ Valid open-source model for text-generation
         # HUGGINGFACE_REPO_ID = "mistralai/Mistral-7B-Instruct-v0.3" # old
-        # HUGGINGFACE_REPO_ID = "tiiuae/falcon-7b-instruct"  # new
-        HUGGINGFACE_REPO_ID = "google/flan-t5-xxl"  # latest
-        HF_TOKEN = os.environ.get("HF_TOKEN")
+        HUGGINGFACE_REPO_ID = "tiiuae/falcon-7b-instruct"
+        # HUGGINGFACE_REPO_ID = "google/flan-t5-xxl"
 
         try:
-            with st.spinner("Loading response..."):
+            with st.spinner("Generating response..."):
+                # ✅ Debug prints (also visible in terminal)
+                print("Prompt entered:", prompt)
+                print("Using model:", HUGGINGFACE_REPO_ID)
+                print("HF_TOKEN present:", HF_TOKEN is not None)
+
                 vectorstore = get_vectorstore()
-                if vectorstore is None:
-                    st.error("Failed to load the vector store")
+                if not vectorstore:
                     return
 
                 qa_chain = RetrievalQA.from_chain_type(
-                    llm=load_llm(huggingface_repo_id=HUGGINGFACE_REPO_ID, HF_TOKEN=HF_TOKEN),
+                    llm=load_llm(HUGGINGFACE_REPO_ID, HF_TOKEN),
                     chain_type="stuff",
                     retriever=vectorstore.as_retriever(search_kwargs={'k': 3}),
                     return_source_documents=True,
@@ -86,10 +92,10 @@ def main():
                 )
 
                 response = qa_chain.invoke({'query': prompt})
-                result = response["result"]
-                source_documents = response["source_documents"]
+                result = response.get("result", "No response from model.")
+                source_documents = response.get("source_documents", [])
 
-                # ✅ Format sources cleanly
+                # ✅ Clean formatting of source docs
                 source_texts = "\n\n".join([doc.page_content for doc in source_documents])
                 result_to_show = f"{result}\n\n---\n**Source Documents:**\n{source_texts}"
 
@@ -97,7 +103,9 @@ def main():
                 st.session_state.messages.append({'role': 'assistant', 'content': result_to_show})
 
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            st.error("An unexpected error occurred:")
+            st.exception(e)
+            print(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
