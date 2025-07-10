@@ -2,21 +2,20 @@ import os
 import streamlit as st
 import traceback
 from dotenv import load_dotenv, find_dotenv
-
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.chains import RetrievalQA
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from huggingface_hub import InferenceClient
 
-# ✅ Load environment variables
+# Load environment variables
 load_dotenv(find_dotenv())
 HF_TOKEN = os.environ.get("HF_TOKEN")
 DB_FAISS_PATH = "vectorstore/db_faiss"
 # MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"  # works with chat API
 MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"  # Use LLaMA 3 for higher quality responses (optional):
 
-# ✅ Load FAISS vectorstore
+# Load FAISS vectorstore
 def get_vectorstore():
     try:
         embedding_model = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
@@ -27,44 +26,53 @@ def get_vectorstore():
         st.exception(e)
         return None
 
-# ✅ Custom prompt template for RAG
+# Custom prompt template for RAG
 def set_custom_prompt():
     return PromptTemplate(
         template="""
-Use the pieces of information provided in the context to answer user's question.
-If you dont know the answer, just say that you dont know, dont try to make up an answer. 
-Dont provide anything out of the given context. Start the answer directly. No small talk please.
+You are a factual assistant. Use only the information from the context to answer the user's question.
+- Be **detailed**, **structured**, and **clear** in your answer.
+- **Do not hallucinate** or make up information.
+- Start the answer directly. Avoid small talk.
 
-Context: {context}
-Question: {question}
+Context:
+{context}
 
-Answer:
+Question:
+{question}
+
+Detailed Answer:
 """,
         input_variables=["context", "question"]
     )
 
-# ✅ Call HuggingFace Inference Client
+
+# Call HuggingFace Inference Client
 def call_hf_chat(prompt):
     client = InferenceClient(model=MODEL_ID, token=HF_TOKEN)
     response = client.chat.completions.create(
         messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "system", "content": "You are a helpful assistant. Be verbose and detailed in your answers. Use only the provided context. Do not hallucinate."},
             {"role": "user", "content": prompt}
-        ]
+        ],
+        max_tokens=1024,           # More room for longer responses
+        temperature=0.3,           # Lower temperature = less hallucination
+        top_p=0.9,                 # More diversity (but still safe)
     )
     return response.choices[0].message.content
 
-# ✅ Format documents with metadata
+
+# Format documents with metadata
 def format_source_documents(docs):
     return "\n\n".join([
         f"📄 **{doc.metadata.get('source', 'Unknown Source')}**\n{doc.page_content.strip()}"
         for doc in docs
     ])
 
-# ✅ Main Streamlit App
+# Main Streamlit App
 def main():
-    st.set_page_config(page_title="Ask Wallet Chatbot", page_icon="💬")
-    st.title("🧠 Ask Wallet AI Assistant")
+    st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬")
+    st.title("🧠 AskWallet - AI Assistant")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -84,7 +92,7 @@ def main():
                 if not vectorstore:
                     return
 
-                retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
                 docs = retriever.invoke(user_prompt)
 
                 context = "\n\n".join([doc.page_content for doc in docs])
