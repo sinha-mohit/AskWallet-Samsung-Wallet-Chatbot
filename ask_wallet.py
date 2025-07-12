@@ -139,7 +139,7 @@ class VectorStore:
             embeddings=embedder,
         )
 
-    def retrieve(self, query: str, k: int = 5) -> List[Document]:
+    def retrieve(self, query: str, k: int = 3) -> List[Document]:
         return self.store.similarity_search(query, k=k)
 
 def ingest_pdfs_to_qdrant(force_recreate: bool = False):
@@ -186,7 +186,7 @@ def get_embedder():
     """Cached function to load the embedding model once."""
     return EmbeddingModel(settings.embed_model)
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_vectorstore():
     """Cached function to create and reuse the VectorStore and its DB connection."""
     return VectorStore(get_embedder())
@@ -201,18 +201,23 @@ def get_llm_client(use_local: bool) -> LLMClient:
 def build_prompt(context: str, question: str) -> str:
     """Builds a robust prompt with clear instructions and context."""
     template = PromptTemplate(
-        template="""You are a intelligent AI assistant. Use ONLY the information from the context below to answer the question.
-- Be detailed, structured, and clear.
-- Do not hallucinate or use outside knowledge. If the answer is not in the context, say so.
+    template="""
+NOTE:
+You are a intelligent AI software assistant. 
+- Use ONLY the information from the CONETXT above to answer the QUESTION.
+- Do not hallucinate or use outside knowledge to answer.
 - Start the answer directly. Avoid small talk or greetings.
 - Use markdown formatting for clarity.
+- Before answering, ensure you have understood the CONETXT and QUESTION.
+- Provide a concise, accurate, and well-structured answer.
+- If QUESTION is not answerable with the given CONETXT, respond with "I don't know" or "Not enough information".
 
-Context:
+CONETXT:
 ---
 {context}
 ---
 
-Question:
+QUESTION:
 {question}
 
 Detailed Answer:
@@ -280,14 +285,20 @@ def main():
                     # 1. Retrieve documents
                     vectorstore = get_vectorstore()
                     retrieved_docs = vectorstore.retrieve(user_prompt)
+                    logging.info(f"Retrieved {len(retrieved_docs)} documents for query: {user_prompt}")
+                    logging.info(f"Retrieved documents: {[doc.metadata for doc in retrieved_docs]}")
+
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
-                    
+                    logging.info(f"Context for prompt: {context}")
+                                  
                     # 2. Build Prompt
                     prompt = build_prompt(context, user_prompt)
+                    logging.info(f"Generated prompt: {prompt}")
                     
                     # 3. Generate Answer
                     llm = get_llm_client(use_local)
                     answer = llm.generate(prompt)
+                    logging.info(f"Generated answer: {answer}")
                     
                     # 4. Format and Display Response
                     sources = format_source_documents(retrieved_docs)
