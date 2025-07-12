@@ -1,20 +1,10 @@
-"""
-AskWallet Chatbot - Production Grade with Local Fallback & Logging
-
-Features:
-- Online/Offline LLM switch (OpenLLM client for production)
-- User query + response logging
-- PDF upload for custom context
-- Persistent chat history
-- Offline PDF ingestion to FAISS store
-"""
-
 import os
 import traceback
+import logging
 import streamlit as st
 import requests
-import logging
 from typing import List
+from tempfile import NamedTemporaryFile
 
 from dotenv import load_dotenv, find_dotenv
 from sentence_transformers import SentenceTransformer
@@ -29,11 +19,12 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 load_dotenv(find_dotenv())
 HF_TOKEN = os.getenv("HF_TOKEN")
 USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
+assert HF_TOKEN or USE_LOCAL_LLM, "HF_TOKEN is required unless USE_LOCAL_LLM is True"
 
 DB_FAISS_PATH = "vectorstore/db_faiss"
 MODEL_ID = "meta-llama/llama-3-8b-instruct"
 REMOTE_API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
-LOCAL_API_URL = "http://localhost:11434/api/chat"
+LOCAL_API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LOG_FILE = "chat_logs.txt"
 DATA_PATH = "data/"
@@ -55,6 +46,10 @@ class EmbeddingModel:
     def __call__(self, text: str) -> List[float]:
         return self.embed_query(text)
 
+@st.cache_resource
+def get_embedder():
+    return EmbeddingModel(EMBED_MODEL)
+
 # === PDF Ingestion to FAISS === #
 def ingest_pdfs_to_faiss(data_path=DATA_PATH, db_path=DB_FAISS_PATH):
     loader = DirectoryLoader(data_path, glob='*.pdf', loader_cls=PyPDFLoader)
@@ -63,7 +58,7 @@ def ingest_pdfs_to_faiss(data_path=DATA_PATH, db_path=DB_FAISS_PATH):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     text_chunks = splitter.split_documents(documents)
 
-    embedder = EmbeddingModel(EMBED_MODEL)
+    embedder = get_embedder()
     db = FAISS.from_documents(text_chunks, embedder)
     db.save_local(db_path)
     print(f"✅ FAISS DB created with {len(text_chunks)} chunks.")
@@ -100,14 +95,15 @@ Detailed Answer:
 
 # === LLM Client === #
 class GenericLLMClient:
-    def __init__(self, model_id: str, token: str = None):
+    def __init__(self, model_id: str, token: str = None, use_local: bool = False):
         self.model_id = model_id
         self.token = token
-        self.url = LOCAL_API_URL if USE_LOCAL_LLM else REMOTE_API_URL
+        self.use_local = use_local
+        self.url = LOCAL_API_URL if use_local else REMOTE_API_URL
 
     def generate(self, prompt: str) -> str:
         headers = {"Content-Type": "application/json"}
-        if self.token and not USE_LOCAL_LLM:
+        if self.token and not self.use_local:
             headers["Authorization"] = f"Bearer {self.token}"
 
         messages = [
@@ -128,32 +124,34 @@ class GenericLLMClient:
         if response.status_code != 200:
             raise RuntimeError(f"API Error {response.status_code}: {response.text}")
 
-        if USE_LOCAL_LLM:
-            return response.json()["message"]
-        return response.json()["choices"][0]["message"]["content"]
+        return response.json().get("message") if self.use_local else response.json()["choices"][0]["message"]["content"]
 
 # === UI Helpers === #
 def format_source_documents(docs: List[Document]) -> str:
     return "\n\n".join([
-        f"\U0001F4C4 **{doc.metadata.get('source', 'Unknown Source')}**\n{doc.page_content.strip()}"
+        f"📄 **{doc.metadata.get('source', 'Unknown Source')}**\n{doc.page_content.strip()}"
         for doc in docs
     ])
 
 def load_pdf_text(uploaded_file):
-    loader = PyPDFLoader(uploaded_file.name)
-    pages = loader.load()
-    return "\n\n".join([page.page_content for page in pages])
+    with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        loader = PyPDFLoader(tmp_file.name)
+        pages = loader.load()
+        return "\n\n".join([page.page_content for page in pages])
 
 # === Streamlit App === #
 def main():
     st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬")
-    st.title("🧠 AskWallet - AI Assistant")
+    st.title(":brain: AskWallet - AI Assistant")
+
+    st.sidebar.title("Settings")
+    use_local = st.sidebar.checkbox("Use Local LLM", value=USE_LOCAL_LLM)
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Button to ingest/rebuild FAISS vectorstore
-    if st.button("📥 Rebuild Vector DB from PDFs"):
+    if st.button(":inbox_tray: Rebuild Vector DB from PDFs"):
         with st.spinner("Rebuilding vector DB..."):
             ingest_pdfs_to_faiss()
             st.success("✅ Vector DB rebuilt successfully.")
@@ -169,32 +167,28 @@ def main():
 
         try:
             with st.spinner("🔍 Searching and generating answer..."):
-                embedder = EmbeddingModel(EMBED_MODEL)
+                embedder = get_embedder()
                 vectorstore = VectorStore(DB_FAISS_PATH, embedder)
                 retrieved_docs = vectorstore.retrieve(user_prompt)
 
                 context_chunks = [doc.page_content for doc in retrieved_docs]
-
                 context = "\n\n".join(context_chunks)
                 prompt = build_prompt(context, user_prompt)
 
-                llm = GenericLLMClient(MODEL_ID, HF_TOKEN)
+                llm = GenericLLMClient(MODEL_ID, HF_TOKEN, use_local=use_local)
                 answer = llm.generate(prompt)
                 sources = format_source_documents(retrieved_docs)
 
-                # response = f"🧠 **Answer:**\n\n{answer}\n\n---\n**🔗 Source Documents:**\n{sources}"
                 response = f"🧠 **Answer:**\n\n{answer}\n\n---\n"
                 st.chat_message("assistant").markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
 
-                # Log interaction
                 logging.info(f"USER: {user_prompt}\nASSISTANT: {answer}\n")
 
         except Exception as e:
             st.error("❌ An error occurred.")
             st.exception(e)
-            print(traceback.format_exc())
-
+            logging.error(f"Exception occurred: {traceback.format_exc()}")
 
 if __name__ == "__main__":
     main()
