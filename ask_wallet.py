@@ -26,27 +26,27 @@ load_dotenv()
 
 class Settings(BaseSettings):
     """Manages application settings and secrets using Pydantic for validation."""
+
     # LLM and API Configuration
-    hf_token: str = os.getenv("HF_TOKEN")
     use_local_llm: bool = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
-    model_id: str = "meta-llama/llama-3-8b-instruct"
-    remote_api_url: str = "https://router.huggingface.co/novita/v3/openai/chat/completions"
-    local_api_url: str = "http://localhost:11434/v1/chat/completions" # Example for a local server
+    hf_token: str = os.getenv("HF_TOKEN", "")
+    model_id: str = os.getenv("MODEL_ID", "meta-llama/llama-3-8b-instruct")
+    remote_api_url: str = os.getenv("REMOTE_API_URL", "https://router.huggingface.co/novita/v3/openai/chat/completions")
+    local_api_url: str = os.getenv("LOCAL_API_URL", "http://localhost:11434/api/chat")
 
     # Qdrant Configuration
-    qdrant_url: str = "http://localhost:6333"
-    qdrant_collection_name: str = "wallet_vectors"
-    
+    qdrant_url: str = os.getenv("QDRANT_URL", "http://qdrant:6333")
+    qdrant_collection_name: str = os.getenv("QDRANT_COLLECTION_NAME", "wallet_vectors")
+
     # Embedding Model
-    embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embed_dimension: int = 384 # Dimension for all-MiniLM-L6-v2
+    embed_model: str = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    embed_dimension: int = 384  # Default for MiniLM-L6-v2 (override manually if needed)
 
     # Local Data and Logging
-    log_file: str = "chat_logs.txt"
-    data_path: str = "data/"
-    
+    log_file: str = os.getenv("LOG_FILE", "chat_logs.txt")
+    data_path: str = os.getenv("DATA_PATH", "data/")
+
     class Config:
-        # This allows Pydantic to read from a .env file if load_dotenv() is used
         env_file = ".env"
         env_file_encoding = "utf-8"
 
@@ -204,7 +204,8 @@ def build_prompt(context: str, question: str) -> str:
         template="""You are a intelligent AI assistant. Use ONLY the information from the context below to answer the question.
 - Be detailed, structured, and clear.
 - Do not hallucinate or use outside knowledge. If the answer is not in the context, say so.
-- Start the answer directly. Avoid small talk.
+- Start the answer directly. Avoid small talk or greetings.
+- Use markdown formatting for clarity.
 
 Context:
 ---

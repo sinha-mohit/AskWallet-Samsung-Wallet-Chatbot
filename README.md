@@ -80,3 +80,9 @@ streamlit run ask_wallet.py
 ### OR:
 docker-compose up --build
 
+### OR fresh built
+docker-compose build --no-cache                  
+docker-compose up
+
+### Docker Compose Down
+docker-compose down
