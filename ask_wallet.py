@@ -5,8 +5,10 @@ import streamlit as st
 import requests
 from typing import List
 from tempfile import NamedTemporaryFile
+from abc import ABC, abstractmethod
 
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
 from sentence_transformers import SentenceTransformer
 
 from langchain_community.vectorstores import Qdrant
@@ -16,27 +18,47 @@ from langchain_core.embeddings import Embeddings
 from langchain.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
+from qdrant_client.http.models import Distance, VectorParams, CollectionStatus
 
-# === Config === #
-load_dotenv(find_dotenv())
-HF_TOKEN = os.getenv("HF_TOKEN")
-USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
-assert HF_TOKEN or USE_LOCAL_LLM, "HF_TOKEN is required unless USE_LOCAL_LLM is True"
+# === 1. Settings Management (Production-Grade) === #
+# Load .env file first
+load_dotenv()
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333").strip().strip('"').strip("'")
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "wallet_vectors")
-MODEL_ID = os.getenv("MODEL_ID", "meta-llama/llama-3-8b-instruct")
-REMOTE_API_URL = os.getenv("REMOTE_API_URL", "https://router.huggingface.co/novita/v3/openai/chat/completions")
-LOCAL_API_URL = os.getenv("LOCAL_API_URL", "https://router.huggingface.co/novita/v3/openai/chat/completions")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-LOG_FILE = os.getenv("LOG_FILE", "chat_logs.txt")
-DATA_PATH = os.getenv("DATA_PATH", "data/")
+class Settings(BaseSettings):
+    """Manages application settings and secrets using Pydantic for validation."""
+    # LLM and API Configuration
+    hf_token: str = os.getenv("HF_TOKEN")
+    use_local_llm: bool = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
+    model_id: str = "meta-llama/llama-3-8b-instruct"
+    remote_api_url: str = "https://router.huggingface.co/novita/v3/openai/chat/completions"
+    local_api_url: str = "http://localhost:11434/v1/chat/completions" # Example for a local server
 
-# === Setup logging === #
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s %(message)s')
+    # Qdrant Configuration
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_collection_name: str = "wallet_vectors"
+    
+    # Embedding Model
+    embed_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embed_dimension: int = 384 # Dimension for all-MiniLM-L6-v2
 
-# === Embedding === #
+    # Local Data and Logging
+    log_file: str = "chat_logs.txt"
+    data_path: str = "data/"
+    
+    class Config:
+        # This allows Pydantic to read from a .env file if load_dotenv() is used
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+# Instantiate settings
+settings = Settings()
+assert settings.hf_token or settings.use_local_llm, "HF_TOKEN is required unless USE_LOCAL_LLM is True"
+
+# === 2. Setup Logging === #
+logging.basicConfig(filename=settings.log_file, level=logging.INFO, format='%(asctime)s %(message)s')
+
+
+# === 3. Embedding Model Wrapper === #
 class EmbeddingModel(Embeddings):
     def __init__(self, model_name: str):
         self.model = SentenceTransformer(model_name)
@@ -47,68 +69,147 @@ class EmbeddingModel(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return self.model.encode(texts, convert_to_tensor=False).tolist()
 
-@st.cache_resource
-def get_embedder():
-    return EmbeddingModel(EMBED_MODEL)
 
-# === PDF Ingestion to Qdrant === #
-def ingest_pdfs_to_qdrant(data_path=DATA_PATH):
-    loader = DirectoryLoader(data_path, glob='*.pdf', loader_cls=PyPDFLoader)
-    documents = loader.load()
+# === 4. LLM Client Abstraction (Modular and Maintainable) === #
+class LLMClient(ABC):
+    """Abstract base class for LLM clients."""
+    @abstractmethod
+    def generate(self, prompt: str) -> str:
+        pass
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    text_chunks = splitter.split_documents(documents)
+class RemoteHuggingFaceClient(LLMClient):
+    """Client for remote Hugging Face Inference API."""
+    def __init__(self, model_id: str, api_url: str, token: str):
+        self.model_id = model_id
+        self.api_url = api_url
+        self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    embedder = get_embedder()
+    def generate(self, prompt: str) -> str:
+        payload = {
+            "model": self.model_id, "stream": False, "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant. Use only provided context."},
+                {"role": "user", "content": prompt}
+            ],
+            "stop": None
+        }
+        try:
+            response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=60)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.Timeout:
+            raise RuntimeError("Request to the language model timed out.")
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"API request failed: {e}")
 
-    try:
-        QdrantClient(url=QDRANT_URL).get_collections()
-        st.sidebar.success("🟢 Qdrant connected")
-    except Exception:
-        st.sidebar.error("🔴 Qdrant not reachable!")
+class LocalLLMClient(LLMClient):
+    """Client for a local, OpenAI-compatible server (e.g., Ollama)."""
+    def __init__(self, model_id: str, api_url: str):
+        self.model_id = model_id
+        self.api_url = api_url
+        self.headers = {"Content-Type": "application/json"}
 
-    QdrantClient(url=QDRANT_URL).recreate_collection(
-        collection_name=QDRANT_COLLECTION_NAME,
-        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-    )
+    def generate(self, prompt: str) -> str:
+        # Note: Payload structure might vary based on local server (Ollama, vLLM, etc.)
+        payload = {
+            "model": self.model_id, "stream": False, "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant. Use only provided context."},
+                {"role": "user", "content": prompt}
+            ],
+            "stop": None
+        }
+        try:
+            response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=120)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.Timeout:
+            raise RuntimeError("Request to the local language model timed out.")
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Local API request failed: {e}")
 
-    Qdrant.from_documents(
-        documents=text_chunks,
-        embedding=embedder,
-        collection_name=QDRANT_COLLECTION_NAME,
-        url=QDRANT_URL,
-    )
-    print(f"✅ Qdrant DB created with {len(text_chunks)} chunks.")
 
-
-# === Vector Store === #
+# === 5. Vector Store and Ingestion === #
 class VectorStore:
-    def __init__(self, embedder: EmbeddingModel):
-        # 1. Create a client to connect to your Qdrant instance
-        client = QdrantClient(url=QDRANT_URL)
-
-        # 2. Initialize the LangChain Qdrant object
-        #    Use the direct constructor instead of from_existing_collection
+    def __init__(self, embedder: Embeddings):
+        self.client = QdrantClient(url=settings.qdrant_url)
         self.store = Qdrant(
-            client=client,
-            collection_name=QDRANT_COLLECTION_NAME,
-            embeddings=embedder,  # Note: The parameter is 'embeddings' (plural)
+            client=self.client,
+            collection_name=settings.qdrant_collection_name,
+            embeddings=embedder,
         )
 
     def retrieve(self, query: str, k: int = 5) -> List[Document]:
         return self.store.similarity_search(query, k=k)
 
-# === Prompt Factory === #
+def ingest_pdfs_to_qdrant(force_recreate: bool = False):
+    """Loads PDFs, splits them, and upserts them into Qdrant."""
+    client = QdrantClient(url=settings.qdrant_url)
+    embedder = get_embedder()
+
+    # Check if collection exists
+    try:
+        collection_info = client.get_collection(collection_name=settings.qdrant_collection_name)
+        if collection_info.status != CollectionStatus.GREEN:
+            force_recreate = True # Recreate if collection is unhealthy
+    except Exception: # Catches connection errors or 404 if collection doesn't exist
+        force_recreate = True
+
+    if force_recreate:
+        st.sidebar.warning("Recreating Qdrant collection...")
+        client.recreate_collection(
+            collection_name=settings.qdrant_collection_name,
+            vectors_config=VectorParams(size=settings.embed_dimension, distance=Distance.COSINE),
+        )
+        st.sidebar.success("Collection recreated.")
+
+    st.sidebar.info("Loading documents...")
+    loader = DirectoryLoader(settings.data_path, glob='*.pdf', loader_cls=PyPDFLoader, show_progress=True)
+    documents = loader.load()
+    
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    text_chunks = splitter.split_documents(documents)
+    
+    st.sidebar.info(f"Embedding and upserting {len(text_chunks)} chunks...")
+    Qdrant.from_documents(
+        documents=text_chunks,
+        embedding=embedder,
+        collection_name=settings.qdrant_collection_name,
+        url=settings.qdrant_url,
+    )
+    st.sidebar.success(f"✅ Qdrant DB updated with {len(text_chunks)} chunks.")
+
+# === 6. Caching and App Logic (Efficient and Responsive) === #
+
+@st.cache_resource
+def get_embedder():
+    """Cached function to load the embedding model once."""
+    return EmbeddingModel(settings.embed_model)
+
+@st.cache_resource
+def get_vectorstore():
+    """Cached function to create and reuse the VectorStore and its DB connection."""
+    return VectorStore(get_embedder())
+
+@st.cache_resource
+def get_llm_client(use_local: bool) -> LLMClient:
+    """Cached factory to get the appropriate LLM client."""
+    if use_local:
+        return LocalLLMClient(model_id=settings.model_id, api_url=settings.local_api_url)
+    return RemoteHuggingFaceClient(model_id=settings.model_id, api_url=settings.remote_api_url, token=settings.hf_token)
+
 def build_prompt(context: str, question: str) -> str:
+    """Builds a robust prompt with clear instructions and context."""
     template = PromptTemplate(
-        template="""
-You are a factual assistant. Use only the information from the context to answer the user's question.
-- Be **detailed**, **structured**, and **clear** in your answer.
-- **Do not hallucinate** or make up information.
+        template="""You are a intelligent AI assistant. Use ONLY the information from the context below to answer the question.
+- Be detailed, structured, and clear.
+- Do not hallucinate or use outside knowledge. If the answer is not in the context, say so.
 - Start the answer directly. Avoid small talk.
 
 Context:
+---
 {context}
+---
 
 Question:
 {question}
@@ -119,101 +220,85 @@ Detailed Answer:
     )
     return template.format(context=context, question=question)
 
-# === LLM Client === #
-class GenericLLMClient:
-    def __init__(self, model_id: str, token: str = None, use_local: bool = False):
-        self.model_id = model_id
-        self.token = token
-        self.use_local = use_local
-        self.url = LOCAL_API_URL if use_local else REMOTE_API_URL
-
-    def generate(self, prompt: str) -> str:
-        headers = {"Content-Type": "application/json"}
-        if self.token and not self.use_local:
-            headers["Authorization"] = f"Bearer {self.token}"
-
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant. Use only the provided context. Do not hallucinate."},
-            {"role": "user", "content": prompt}
-        ]
-
-        payload = {
-            "model": self.model_id,
-            "stream": False,
-            "messages": messages,
-            "temperature": 0.3,
-            "top_p": 0.9,
-            "max_tokens": 1024
-        }
-
-        response = requests.post(self.url, headers=headers, json=payload)
-        if response.status_code != 200:
-            raise RuntimeError(f"API Error {response.status_code}: {response.text}")
-
-        return response.json().get("message") if self.use_local else response.json()["choices"][0]["message"]["content"]
-
-# === UI Helpers === #
 def format_source_documents(docs: List[Document]) -> str:
+    """Formats retrieved documents for display."""
     return "\n\n".join([
-        f"📄 **{doc.metadata.get('source', 'Unknown Source')}**\n{doc.page_content.strip()}"
+        f"📄 **Source: {doc.metadata.get('source', 'N/A')} (Page: {doc.metadata.get('page', 'N/A')})**\n{doc.page_content.strip()}"
         for doc in docs
     ])
 
-def load_pdf_text(uploaded_file):
-    with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(uploaded_file.read())
-        loader = PyPDFLoader(tmp_file.name)
-        pages = loader.load()
-        return "\n\n".join([page.page_content for page in pages])
-
-# === Streamlit App === #
+# === 7. Streamlit App UI (with UX Improvements) === #
 def main():
-    st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬")
+    st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬", layout="wide")
     st.title(":brain: AskWallet - AI Assistant")
 
-    st.sidebar.title("Settings")
-    use_local = st.sidebar.checkbox("Use Local LLM", value=USE_LOCAL_LLM)
+    # --- Sidebar for Settings and Controls ---
+    st.sidebar.title("Settings & Controls")
+    use_local = st.sidebar.checkbox("Use Local LLM", value=settings.use_local_llm, key="use_local_llm_checkbox")
+    
+    # Safer DB Rebuild with Confirmation
+    if st.sidebar.button("Update Vector DB from PDFs"):
+        st.session_state.confirm_rebuild = True
 
+    if st.session_state.get("confirm_rebuild"):
+        st.sidebar.warning("⚠️ This will add new documents to the DB. Recreate the collection for a full reset.")
+        col1, col2 = st.sidebar.columns(2)
+        if col1.button("Just Add New", key="add_new"):
+            with st.spinner("Adding new documents to vector DB..."):
+                ingest_pdfs_to_qdrant(force_recreate=False)
+            st.session_state.confirm_rebuild = False # Reset state
+        if col2.button("Wipe & Rebuild", key="wipe_rebuild"):
+            with st.spinner("Wiping and rebuilding vector DB..."):
+                ingest_pdfs_to_qdrant(force_recreate=True)
+            st.session_state.confirm_rebuild = False # Reset state
+            
+    try:
+        client = QdrantClient(url=settings.qdrant_url)
+        client.get_collections()
+        st.sidebar.success("🟢 Qdrant connected")
+    except Exception:
+        st.sidebar.error("🔴 Qdrant not reachable!")
+
+
+    # --- Main Chat Interface ---
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    if st.button(":inbox_tray: Rebuild Vector DB from PDFs"):
-        with st.spinner("Rebuilding vector DB..."):
-            ingest_pdfs_to_qdrant()
-            st.success("✅ Vector DB rebuilt successfully.")
-
     for msg in st.session_state.messages:
-        st.chat_message(msg["role"]).markdown(msg["content"])
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-    user_prompt = st.chat_input("💬 Ask your question here...")
-
-    if user_prompt:
-        st.chat_message("user").markdown(user_prompt)
+    if user_prompt := st.chat_input("💬 Ask your question here..."):
         st.session_state.messages.append({"role": "user", "content": user_prompt})
+        with st.chat_message("user"):
+            st.markdown(user_prompt)
 
         try:
-            with st.spinner("🔍 Searching and generating answer..."):
-                embedder = get_embedder()
-                vectorstore = VectorStore(embedder)
-                retrieved_docs = vectorstore.retrieve(user_prompt)
-
-                context_chunks = [doc.page_content for doc in retrieved_docs]
-                context = "\n\n".join(context_chunks)
-                prompt = build_prompt(context, user_prompt)
-
-                llm = GenericLLMClient(MODEL_ID, HF_TOKEN, use_local=use_local)
-                answer = llm.generate(prompt)
-                sources = format_source_documents(retrieved_docs)
-
-                response = f"🧐 **Answer:**\n\n{answer}\n\n---\n{sources}"
-                st.chat_message("assistant").markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-
-                logging.info(f"USER: {user_prompt}\nASSISTANT: {answer}\n")
+            with st.chat_message("assistant"):
+                with st.spinner("🔍 Searching and generating answer..."):
+                    # 1. Retrieve documents
+                    vectorstore = get_vectorstore()
+                    retrieved_docs = vectorstore.retrieve(user_prompt)
+                    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                    
+                    # 2. Build Prompt
+                    prompt = build_prompt(context, user_prompt)
+                    
+                    # 3. Generate Answer
+                    llm = get_llm_client(use_local)
+                    answer = llm.generate(prompt)
+                    
+                    # 4. Format and Display Response
+                    sources = format_source_documents(retrieved_docs)
+                    # response = f"🧐 **Answer:**\n\n{answer}\n\n---\n### Sources Used:\n{sources}"
+                    response = f"🧐 **Answer:**\n\n{answer}\n\n---\n"
+                    st.markdown(response)
+                    
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    logging.info(f"USER: {user_prompt}\nASSISTANT: {answer}\n")
 
         except Exception as e:
-            st.error("❌ An error occurred.")
-            st.exception(e)
+            st.error(f"❌ An error occurred: {e}")
             logging.error(f"Exception occurred: {traceback.format_exc()}")
 
 if __name__ == "__main__":
