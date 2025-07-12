@@ -1,8 +1,10 @@
 import os
 import traceback
 import logging
-import streamlit as st
 import requests
+import tiktoken
+import streamlit as st
+
 from typing import List
 from tempfile import NamedTemporaryFile
 from abc import ABC, abstractmethod
@@ -19,6 +21,8 @@ from langchain.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, CollectionStatus
+
+
 
 # === 1. Settings Management (Production-Grade) === #
 # Load .env file first
@@ -74,7 +78,7 @@ class EmbeddingModel(Embeddings):
 class LLMClient(ABC):
     """Abstract base class for LLM clients."""
     @abstractmethod
-    def generate(self, prompt: str) -> str:
+    def generate(self, messages: List[dict]) -> str:
         pass
 
 class RemoteHuggingFaceClient(LLMClient):
@@ -84,13 +88,10 @@ class RemoteHuggingFaceClient(LLMClient):
         self.api_url = api_url
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, messages: List[dict]) -> str:
         payload = {
             "model": self.model_id, "stream": False, "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9,
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant. Use only provided context."},
-                {"role": "user", "content": prompt}
-            ],
+            "messages": messages,
             "stop": None
         }
         try:
@@ -109,14 +110,11 @@ class LocalLLMClient(LLMClient):
         self.api_url = api_url
         self.headers = {"Content-Type": "application/json"}
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, messages: List[dict]) -> str:
         # Note: Payload structure might vary based on local server (Ollama, vLLM, etc.)
         payload = {
             "model": self.model_id, "stream": False, "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9,
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant. Use only provided context."},
-                {"role": "user", "content": prompt}
-            ],
+            "messages": messages,
             "stop": None
         }
         try:
@@ -242,7 +240,19 @@ def format_source_documents(docs: List[Document]) -> str:
         for doc in docs
     ])
 
-# === 7. Streamlit App UI (with UX Improvements) === #
+# === 7. Token Management and Message Truncation === #
+def truncate_messages_by_token_limit(messages, tokenizer, max_tokens):
+    total_tokens = 0
+    truncated = []
+    for message in reversed(messages):
+        tokens = len(tokenizer.encode(message["content"])) + 4
+        if total_tokens + tokens > max_tokens:
+            break
+        truncated.insert(0, message)
+        total_tokens += tokens
+    return truncated
+
+# === 8. Streamlit App UI (with UX Improvements) === #
 def main():
     st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬", layout="wide")
     st.title(":brain: AskWallet - AI Assistant")
@@ -296,20 +306,18 @@ def main():
                     vectorstore = get_vectorstore()
                     retrieved_docs = vectorstore.retrieve(user_prompt)
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
-                    
-                    # 2. Build Prompt
-                    prompt = build_prompt(context, user_prompt)
-                    
-                    # 3. Generate Answer
+
+                    system_msg = {"role": "system", "content": build_prompt(context, user_prompt)}
+                    message_history = [system_msg] + st.session_state.messages
+                    tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+                    truncated_messages = truncate_messages_by_token_limit(message_history, tokenizer, max_tokens=3000)
+
                     llm = get_llm_client(use_local)
-                    answer = llm.generate(prompt)
-                    
-                    # 4. Format and Display Response
-                    sources = format_source_documents(retrieved_docs)
-                    # response = f"🧐 **Answer:**\n\n{answer}\n\n---\n### Sources Used:\n{sources}"
+                    answer = llm.generate(truncated_messages)
+
                     response = f"🧐 **Answer:**\n\n{answer}\n\n---\n"
                     st.markdown(response)
-                    
+
                     st.session_state.messages.append({"role": "assistant", "content": response})
                     logging.info(f"USER: {user_prompt}\nASSISTANT: {answer}\n")
 
