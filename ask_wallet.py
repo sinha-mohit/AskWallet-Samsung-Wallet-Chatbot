@@ -12,6 +12,7 @@ from sentence_transformers import SentenceTransformer
 from langchain_community.vectorstores import Qdrant
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
@@ -23,7 +24,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
 assert HF_TOKEN or USE_LOCAL_LLM, "HF_TOKEN is required unless USE_LOCAL_LLM is True"
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333").strip().strip('"').strip("'")
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "wallet_vectors")
 MODEL_ID = os.getenv("MODEL_ID", "meta-llama/llama-3-8b-instruct")
 REMOTE_API_URL = os.getenv("REMOTE_API_URL", "https://router.huggingface.co/novita/v3/openai/chat/completions")
@@ -36,7 +37,7 @@ DATA_PATH = os.getenv("DATA_PATH", "data/")
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s %(message)s')
 
 # === Embedding === #
-class EmbeddingModel:
+class EmbeddingModel(Embeddings):
     def __init__(self, model_name: str):
         self.model = SentenceTransformer(model_name)
 
@@ -44,10 +45,7 @@ class EmbeddingModel:
         return self.model.encode(text, convert_to_tensor=False).tolist()
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return [self.model.encode(t, convert_to_tensor=False).tolist() for t in texts]
-
-    def __call__(self, text: str) -> List[float]:
-        return self.embed_query(text)
+        return self.model.encode(texts, convert_to_tensor=False).tolist()
 
 @st.cache_resource
 def get_embedder():
@@ -63,8 +61,13 @@ def ingest_pdfs_to_qdrant(data_path=DATA_PATH):
 
     embedder = get_embedder()
 
-    qdrant_client = QdrantClient(url=QDRANT_URL)
-    qdrant_client.recreate_collection(
+    try:
+        QdrantClient(url=QDRANT_URL).get_collections()
+        st.sidebar.success("🟢 Qdrant connected")
+    except Exception:
+        st.sidebar.error("🔴 Qdrant not reachable!")
+
+    QdrantClient(url=QDRANT_URL).recreate_collection(
         collection_name=QDRANT_COLLECTION_NAME,
         vectors_config=VectorParams(size=384, distance=Distance.COSINE),
     )
@@ -73,18 +76,23 @@ def ingest_pdfs_to_qdrant(data_path=DATA_PATH):
         documents=text_chunks,
         embedding=embedder,
         collection_name=QDRANT_COLLECTION_NAME,
-        client=qdrant_client,
+        url=QDRANT_URL,
     )
     print(f"✅ Qdrant DB created with {len(text_chunks)} chunks.")
+
 
 # === Vector Store === #
 class VectorStore:
     def __init__(self, embedder: EmbeddingModel):
-        self.client = QdrantClient(url=QDRANT_URL)
+        # 1. Create a client to connect to your Qdrant instance
+        client = QdrantClient(url=QDRANT_URL)
+
+        # 2. Initialize the LangChain Qdrant object
+        #    Use the direct constructor instead of from_existing_collection
         self.store = Qdrant(
-            client=self.client,
+            client=client,
             collection_name=QDRANT_COLLECTION_NAME,
-            embedding=embedder
+            embeddings=embedder,  # Note: The parameter is 'embeddings' (plural)
         )
 
     def retrieve(self, query: str, k: int = 5) -> List[Document]:
@@ -197,7 +205,7 @@ def main():
                 answer = llm.generate(prompt)
                 sources = format_source_documents(retrieved_docs)
 
-                response = f"🧠 **Answer:**\n\n{answer}\n\n---\n"
+                response = f"🧐 **Answer:**\n\n{answer}\n\n---\n{sources}"
                 st.chat_message("assistant").markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
 
