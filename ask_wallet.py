@@ -165,7 +165,7 @@ def ingest_pdfs_to_qdrant(force_recreate: bool = False):
     loader = DirectoryLoader(settings.data_path, glob='*.pdf', loader_cls=PyPDFLoader, show_progress=True)
     documents = loader.load()
     
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
     text_chunks = splitter.split_documents(documents)
     
     st.sidebar.info(f"Embedding and upserting {len(text_chunks)} chunks...")
