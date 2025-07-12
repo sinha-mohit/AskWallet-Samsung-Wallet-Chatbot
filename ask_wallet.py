@@ -186,7 +186,7 @@ def get_embedder():
     """Cached function to load the embedding model once."""
     return EmbeddingModel(settings.embed_model)
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_vectorstore():
     """Cached function to create and reuse the VectorStore and its DB connection."""
     return VectorStore(get_embedder())
@@ -201,11 +201,25 @@ def get_llm_client(use_local: bool) -> LLMClient:
 def build_prompt(context: str, question: str) -> str:
     """Builds a robust prompt with clear instructions and context."""
     template = PromptTemplate(
-        template="""You are a intelligent AI assistant. Use ONLY the information from the context below to answer the question.
-- Be detailed, structured, and clear.
-- Do not hallucinate or use outside knowledge. If the answer is not in the context, say so.
-- Start the answer directly. Avoid small talk or greetings.
-- Use markdown formatting for clarity.
+        template="""
+You are a professional AI assistant for software developers. Your job is to help users understand large technical documentation and API references.
+
+## 🔒 Rules (Strictly Follow)
+- Use **only** the information from the context below.
+- **Never guess** or use outside knowledge.
+- If the answer is not in the context, respond with:
+  > ⚠️ The answer is not available in the provided context.
+- Prefer **code examples** from the context when available.
+- **Cite the source** for each major point when available.
+
+## 📝 Answer Format (Use Markdown)
+- Use `#####` for section headers (like "Overview", "Steps", "Example")
+- Use bullet points or numbered lists for clarity
+- Use code blocks (```lang) for code examples
+- Include citations immediately after relevant points
+- Inline code (`like_this`) and code blocks for examples
+- If applicable, cite specific sections or filenames from the context.
+- Start your response directly. Avoid greetings or introductory fluff.
 
 Context:
 ---
@@ -278,6 +292,7 @@ def main():
             with st.chat_message("assistant"):
                 with st.spinner("🔍 Searching and generating answer..."):
                     # 1. Retrieve documents
+
                     vectorstore = get_vectorstore()
                     retrieved_docs = vectorstore.retrieve(user_prompt)
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
