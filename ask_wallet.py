@@ -9,11 +9,13 @@ from tempfile import NamedTemporaryFile
 from dotenv import load_dotenv, find_dotenv
 from sentence_transformers import SentenceTransformer
 
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Qdrant
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Distance, VectorParams
 
 # === Config === #
 load_dotenv(find_dotenv())
@@ -21,13 +23,14 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
 assert HF_TOKEN or USE_LOCAL_LLM, "HF_TOKEN is required unless USE_LOCAL_LLM is True"
 
-DB_FAISS_PATH = "vectorstore/db_faiss"
-MODEL_ID = "meta-llama/llama-3-8b-instruct"
-REMOTE_API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
-LOCAL_API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
-EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LOG_FILE = "chat_logs.txt"
-DATA_PATH = "data/"
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "wallet_vectors")
+MODEL_ID = os.getenv("MODEL_ID", "meta-llama/llama-3-8b-instruct")
+REMOTE_API_URL = os.getenv("REMOTE_API_URL", "https://router.huggingface.co/novita/v3/openai/chat/completions")
+LOCAL_API_URL = os.getenv("LOCAL_API_URL", "https://router.huggingface.co/novita/v3/openai/chat/completions")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+LOG_FILE = os.getenv("LOG_FILE", "chat_logs.txt")
+DATA_PATH = os.getenv("DATA_PATH", "data/")
 
 # === Setup logging === #
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s %(message)s')
@@ -50,8 +53,8 @@ class EmbeddingModel:
 def get_embedder():
     return EmbeddingModel(EMBED_MODEL)
 
-# === PDF Ingestion to FAISS === #
-def ingest_pdfs_to_faiss(data_path=DATA_PATH, db_path=DB_FAISS_PATH):
+# === PDF Ingestion to Qdrant === #
+def ingest_pdfs_to_qdrant(data_path=DATA_PATH):
     loader = DirectoryLoader(data_path, glob='*.pdf', loader_cls=PyPDFLoader)
     documents = loader.load()
 
@@ -59,18 +62,33 @@ def ingest_pdfs_to_faiss(data_path=DATA_PATH, db_path=DB_FAISS_PATH):
     text_chunks = splitter.split_documents(documents)
 
     embedder = get_embedder()
-    db = FAISS.from_documents(text_chunks, embedder)
-    db.save_local(db_path)
-    print(f"✅ FAISS DB created with {len(text_chunks)} chunks.")
+
+    qdrant_client = QdrantClient(url=QDRANT_URL)
+    qdrant_client.recreate_collection(
+        collection_name=QDRANT_COLLECTION_NAME,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
+
+    Qdrant.from_documents(
+        documents=text_chunks,
+        embedding=embedder,
+        collection_name=QDRANT_COLLECTION_NAME,
+        client=qdrant_client,
+    )
+    print(f"✅ Qdrant DB created with {len(text_chunks)} chunks.")
 
 # === Vector Store === #
 class VectorStore:
-    def __init__(self, db_path: str, embedder: EmbeddingModel):
-        self.db = FAISS.load_local(db_path, embedder, allow_dangerous_deserialization=True)
+    def __init__(self, embedder: EmbeddingModel):
+        self.client = QdrantClient(url=QDRANT_URL)
+        self.store = Qdrant(
+            client=self.client,
+            collection_name=QDRANT_COLLECTION_NAME,
+            embedding=embedder
+        )
 
     def retrieve(self, query: str, k: int = 5) -> List[Document]:
-        retriever = self.db.as_retriever(search_kwargs={"k": k})
-        return retriever.invoke(query)
+        return self.store.similarity_search(query, k=k)
 
 # === Prompt Factory === #
 def build_prompt(context: str, question: str) -> str:
@@ -153,7 +171,7 @@ def main():
 
     if st.button(":inbox_tray: Rebuild Vector DB from PDFs"):
         with st.spinner("Rebuilding vector DB..."):
-            ingest_pdfs_to_faiss()
+            ingest_pdfs_to_qdrant()
             st.success("✅ Vector DB rebuilt successfully.")
 
     for msg in st.session_state.messages:
@@ -168,7 +186,7 @@ def main():
         try:
             with st.spinner("🔍 Searching and generating answer..."):
                 embedder = get_embedder()
-                vectorstore = VectorStore(DB_FAISS_PATH, embedder)
+                vectorstore = VectorStore(embedder)
                 retrieved_docs = vectorstore.retrieve(user_prompt)
 
                 context_chunks = [doc.page_content for doc in retrieved_docs]

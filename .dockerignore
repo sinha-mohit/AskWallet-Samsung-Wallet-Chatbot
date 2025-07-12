@@ -1,0 +1,37 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Byte-compiled files
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+wlt-env
+
+# Mac/Unix system files
+.DS_Store
+
+# # Local PDFs or ingested data
+# data/*
+# !data/.gitkeep
+
+# Streamlit generated folders
+.streamlit/
+
+# Qdrant volumes (if any generated outside container)
+qdrant_storage/
+
+# VSCode and IDE settings
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore

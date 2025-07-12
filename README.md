@@ -75,3 +75,8 @@ pip install -r requirements.txt
 
 ### Steap 5: Run the Chatbot
 streamlit run ask_wallet.py
+
+
+### OR:
+docker-compose up --build
+
