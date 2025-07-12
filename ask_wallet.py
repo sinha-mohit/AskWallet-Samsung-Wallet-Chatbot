@@ -246,11 +246,11 @@ def truncate_messages_by_token_limit(messages, tokenizer, max_tokens):
     total_tokens = 0
     truncated = []
     for message in reversed(messages):
-        tokens = len(tokenizer.encode(message["content"])) + 4
-        if total_tokens + tokens > max_tokens:
+        message_tokens = tokenizer.encode(message["content"], add_special_tokens=False)
+        total_tokens += len(message_tokens)
+        if total_tokens > max_tokens:
             break
         truncated.insert(0, message)
-        total_tokens += tokens
     return truncated
 
 
