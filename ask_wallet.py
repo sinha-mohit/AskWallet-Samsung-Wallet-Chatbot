@@ -20,6 +20,21 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, CollectionStatus
 
+# === 0. Imports and Initial Setup === #
+SYSTEM_PROMT = """
+You are a intelligent AI software assistant. 
+- Use ONLY the information from the CONTEXT above to answer the QUESTION.
+- Do not hallucinate or use outside knowledge to answer.
+- Start the answer directly. Avoid small talk or greetings.
+- Use markdown formatting for clarity.
+- Before answering, ensure you have understood the CONTEXT and QUESTION.
+- Provide a concise, accurate, and well-structured answer.
+- Understand that the CONTEXT may contain multiple documents.
+- If the CONTEXT is too long, focus on the most relevant parts.
+- Try to undertand the CONTEXT and QUESTION before answering.
+- Try to understand the user's intent from the QUESTION.
+- If QUESTION is not answerable with the given CONTEXT, respond with "I don't know" or "Not enough information".
+"""
 # === 1. Settings Management (Production-Grade) === #
 # Load .env file first
 load_dotenv()
@@ -88,14 +103,16 @@ class RemoteHuggingFaceClient(LLMClient):
         payload = {
             "model": self.model_id, "stream": False, "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9,
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant. Use only provided context."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": SYSTEM_PROMT.strip()},
+                {"role": "user", "content": prompt.strip()}
             ],
             "stop": None
         }
+        logging.info(f"Sending payload to REMOTE LLM API: {payload}")
         try:
             response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=60)
             response.raise_for_status()
+            logging.info(f"API response: {response.json()}")
             return response.json()["choices"][0]["message"]["content"]
         except requests.exceptions.Timeout:
             raise RuntimeError("Request to the language model timed out.")
@@ -103,30 +120,35 @@ class RemoteHuggingFaceClient(LLMClient):
             raise RuntimeError(f"API request failed: {e}")
 
 class LocalLLMClient(LLMClient):
-    """Client for a local, OpenAI-compatible server (e.g., Ollama)."""
+    """Client for a local llama.cpp model via HTTP API."""
     def __init__(self, model_id: str, api_url: str):
         self.model_id = model_id
-        self.api_url = api_url
+        self.api_url = api_url  # Example: http://localhost:8000/v1/completions
         self.headers = {"Content-Type": "application/json"}
 
     def generate(self, prompt: str) -> str:
-        # Note: Payload structure might vary based on local server (Ollama, vLLM, etc.)
+        full_prompt = f"{SYSTEM_PROMT.strip()}\n\n{prompt.strip()}"
+
         payload = {
-            "model": self.model_id, "stream": False, "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9,
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant. Use only provided context."},
-                {"role": "user", "content": prompt}
-            ],
-            "stop": None
+            "model": self.model_id,
+            "prompt": full_prompt,
+            "max_tokens": 1024,
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "stop": None,
+            "stream": False
         }
+
+        logging.info(f"Sending payload to LOCAL LLM API: {payload}")
         try:
             response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=120)
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+            return response.json()["choices"][0]["text"]
         except requests.exceptions.Timeout:
             raise RuntimeError("Request to the local language model timed out.")
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Local API request failed: {e}")
+
 
 
 # === 5. Vector Store and Ingestion === #
@@ -202,21 +224,10 @@ def build_prompt(context: str, question: str) -> str:
     """Builds a robust prompt with clear instructions and context."""
     template = PromptTemplate(
     template="""
-NOTE:
-You are a intelligent AI software assistant. 
-- Use ONLY the information from the CONETXT above to answer the QUESTION.
-- Do not hallucinate or use outside knowledge to answer.
-- Start the answer directly. Avoid small talk or greetings.
-- Use markdown formatting for clarity.
-- Before answering, ensure you have understood the CONETXT and QUESTION.
-- Provide a concise, accurate, and well-structured answer.
-- If QUESTION is not answerable with the given CONETXT, respond with "I don't know" or "Not enough information".
-
-CONETXT:
----
+CONTEXT:
+---------
 {context}
----
-
+---------
 QUESTION:
 {question}
 
@@ -285,7 +296,7 @@ def main():
                     # 1. Retrieve documents
                     vectorstore = get_vectorstore()
                     retrieved_docs = vectorstore.retrieve(user_prompt)
-                    logging.info(f"Retrieved {len(retrieved_docs)} documents for query: {user_prompt}")
+                    # logging.info(f"Retrieved {len(retrieved_docs)} documents for query: {user_prompt}")
                     logging.info(f"Retrieved documents: {[doc.metadata for doc in retrieved_docs]}")
 
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
