@@ -2,11 +2,10 @@ import os
 import streamlit as st
 import traceback
 from dotenv import load_dotenv, find_dotenv
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.chains import RetrievalQA
+from sentence_transformers import SentenceTransformer
+import requests
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
-from huggingface_hub import InferenceClient
 
 # Load environment variables
 load_dotenv(find_dotenv())
@@ -14,11 +13,27 @@ HF_TOKEN = os.environ.get("HF_TOKEN")
 DB_FAISS_PATH = "vectorstore/db_faiss"
 # MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"  # works with chat API
 MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"  # Use LLaMA 3 for higher quality responses (optional):
+API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
+
+# Custom embedding wrapper for LangChain compatibility
+class LocalSentenceTransformer:
+    def __init__(self, model_name):
+        self.model = SentenceTransformer(model_name)
+
+    def embed_query(self, text):
+        return self.model.encode(text, convert_to_tensor=False).tolist()
+
+    def embed_documents(self, texts):
+        return [self.model.encode(t, convert_to_tensor=False).tolist() for t in texts]
+
+    def __call__(self, text):
+        # This makes it compatible with LangChain's .similarity_search()
+        return self.embed_query(text)
 
 # Load FAISS vectorstore
 def get_vectorstore():
     try:
-        embedding_model = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
+        embedding_model = LocalSentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
         db = FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
         return db
     except Exception as e:
@@ -49,18 +64,27 @@ Detailed Answer:
 
 # Call HuggingFace Inference Client
 def call_hf_chat(prompt):
-    client = InferenceClient(model=MODEL_ID, token=HF_TOKEN)
-    response = client.chat.completions.create(
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant. Be verbose and detailed in your answers. Use only the provided context. Do not hallucinate."},
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": MODEL_ID,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant. Use only the provided context. Do not hallucinate."},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=1024,           # More room for longer responses
-        temperature=0.3,           # Lower temperature = less hallucination
-        top_p=0.9,                 # More diversity (but still safe)
-    )
-    return response.choices[0].message.content
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "max_tokens": 1024
+    }
 
+    response = requests.post(API_URL, headers=headers, json=payload)
+    response.raise_for_status()
+
+    return response.json()["choices"][0]["message"]["content"]
 
 # Format documents with metadata
 def format_source_documents(docs):
