@@ -158,8 +158,6 @@ def main():
             ingest_pdfs_to_faiss()
             st.success("✅ Vector DB rebuilt successfully.")
 
-    uploaded_file = st.file_uploader("📄 Upload a PDF for custom context", type="pdf")
-
     for msg in st.session_state.messages:
         st.chat_message(msg["role"]).markdown(msg["content"])
 
@@ -176,9 +174,6 @@ def main():
                 retrieved_docs = vectorstore.retrieve(user_prompt)
 
                 context_chunks = [doc.page_content for doc in retrieved_docs]
-
-                if uploaded_file:
-                    context_chunks.append(load_pdf_text(uploaded_file))
 
                 context = "\n\n".join(context_chunks)
                 prompt = build_prompt(context, user_prompt)
