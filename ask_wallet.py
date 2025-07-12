@@ -1,21 +1,25 @@
 import os
-import streamlit as st
 import traceback
+import streamlit as st
+import requests
+
 from dotenv import load_dotenv, find_dotenv
 from sentence_transformers import SentenceTransformer
-import requests
+
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 
 # Load environment variables
 load_dotenv(find_dotenv())
 HF_TOKEN = os.environ.get("HF_TOKEN")
+if HF_TOKEN is None:
+    raise RuntimeError("HF_TOKEN is not set. Please check your .env file or environment.")
+
 DB_FAISS_PATH = "vectorstore/db_faiss"
-# MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"  # works with chat API
-MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"  # Use LLaMA 3 for higher quality responses (optional):
+MODEL_ID = "meta-llama/llama-3-8b-instruct"
 API_URL = "https://router.huggingface.co/novita/v3/openai/chat/completions"
 
-# Custom embedding wrapper for LangChain compatibility
+# Local embedding model wrapper
 class LocalSentenceTransformer:
     def __init__(self, model_name):
         self.model = SentenceTransformer(model_name)
@@ -27,10 +31,10 @@ class LocalSentenceTransformer:
         return [self.model.encode(t, convert_to_tensor=False).tolist() for t in texts]
 
     def __call__(self, text):
-        # This makes it compatible with LangChain's .similarity_search()
         return self.embed_query(text)
 
-# Load FAISS vectorstore
+# Load FAISS vectorstore (cached)
+@st.cache_resource
 def get_vectorstore():
     try:
         embedding_model = LocalSentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
@@ -41,7 +45,7 @@ def get_vectorstore():
         st.exception(e)
         return None
 
-# Custom prompt template for RAG
+# Prompt template
 def set_custom_prompt():
     return PromptTemplate(
         template="""
@@ -61,8 +65,7 @@ Detailed Answer:
         input_variables=["context", "question"]
     )
 
-
-# Call HuggingFace Inference Client
+# Call Hugging Face chat completion endpoint
 def call_hf_chat(prompt):
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}",
@@ -82,6 +85,9 @@ def call_hf_chat(prompt):
     }
 
     response = requests.post(API_URL, headers=headers, json=payload)
+    if response.status_code != 200:
+        st.error(f"API Error {response.status_code}")
+        st.code(response.text)
     response.raise_for_status()
 
     return response.json()["choices"][0]["message"]["content"]
@@ -93,7 +99,7 @@ def format_source_documents(docs):
         for doc in docs
     ])
 
-# Main Streamlit App
+# Streamlit App
 def main():
     st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬")
     st.title("🧠 AskWallet - AI Assistant")
@@ -113,15 +119,11 @@ def main():
         try:
             with st.spinner("🔍 Searching and generating answer..."):
                 vectorstore = get_vectorstore()
-                if not vectorstore:
-                    return
-
                 retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
                 docs = retriever.invoke(user_prompt)
 
                 context = "\n\n".join([doc.page_content for doc in docs])
-                prompt_template = set_custom_prompt()
-                final_prompt = prompt_template.format(context=context, question=user_prompt)
+                final_prompt = set_custom_prompt().format(context=context, question=user_prompt)
 
                 answer = call_hf_chat(final_prompt)
                 source_texts = format_source_documents(docs)
