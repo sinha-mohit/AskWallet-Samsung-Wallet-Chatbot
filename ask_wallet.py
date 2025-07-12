@@ -196,7 +196,7 @@ def get_llm_client(use_local: bool) -> LLMClient:
         return LocalLLMClient(model_id=settings.model_id, api_url=settings.local_api_url)
     return RemoteHuggingFaceClient(model_id=settings.model_id, api_url=settings.remote_api_url, token=settings.hf_token)
 
-def build_prompt(context: str, question: str) -> str:
+def build_prompt(context: str, question: str, history: str) -> str:
     """Builds a robust prompt with clear instructions and context."""
     template = PromptTemplate(
         template="""
@@ -219,19 +219,20 @@ You are a professional AI assistant for software developers. Your job is to help
 - If applicable, cite specific sections or filenames from the context.
 - Start your response directly. Avoid greetings or introductory fluff.
 
-Context:
----
-{context}
----
+## Chat History
+{history}
 
-Question:
+## Context
+{context}
+
+## Question
 {question}
 
 Detailed Answer:
 """,
-        input_variables=["context", "question"]
+        input_variables=["context", "question", "history"]
     )
-    return template.format(context=context, question=question)
+    return template.format(context=context, question=question, history=history)
 
 def format_source_documents(docs: List[Document]) -> str:
     """Formats retrieved documents for display."""
@@ -251,6 +252,7 @@ def truncate_messages_by_token_limit(messages, tokenizer, max_tokens):
         truncated.insert(0, message)
         total_tokens += tokens
     return truncated
+
 
 # === 8. Streamlit App UI (with UX Improvements) === #
 def main():
@@ -303,23 +305,45 @@ def main():
                 with st.spinner("🔍 Searching and generating answer..."):
                     # 1. Retrieve documents
 
+                    # 1. Retrieve documents
                     vectorstore = get_vectorstore()
                     retrieved_docs = vectorstore.retrieve(user_prompt)
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-                    system_msg = {"role": "system", "content": build_prompt(context, user_prompt)}
-                    message_history = [system_msg] + st.session_state.messages
+                    # 2. Truncate token-limited message history
                     tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
-                    truncated_messages = truncate_messages_by_token_limit(message_history, tokenizer, max_tokens=3000)
+                    chat_history = truncate_messages_by_token_limit(
+                        st.session_state.messages[:-1],  # exclude the current user prompt
+                        tokenizer,
+                        max_tokens=2000  # leave room for context and question
+                    )
 
+                    # 3. Format history into readable text
+                    def format_chat_history(messages: List[dict]) -> str:
+                        formatted = []
+                        for msg in messages:
+                            role = msg["role"].capitalize()
+                            formatted.append(f"{role}: {msg['content']}")
+                        return "\n".join(formatted)
+
+                    formatted_history = format_chat_history(chat_history)
+
+                    # 4. Build the final prompt with history + context + question
+                    prompt = build_prompt(context=context, question=user_prompt, history=formatted_history)
+
+                    # 5. Generate Answer
                     llm = get_llm_client(use_local)
-                    answer = llm.generate(truncated_messages)
+                    answer = llm.generate([
+                        {"role": "user", "content": prompt}
+                    ])
 
+                    # 6. Display and save
                     response = f"🧐 **Answer:**\n\n{answer}\n\n---\n"
                     st.markdown(response)
 
                     st.session_state.messages.append({"role": "assistant", "content": response})
                     logging.info(f"USER: {user_prompt}\nASSISTANT: {answer}\n")
+
 
         except Exception as e:
             st.error(f"❌ An error occurred: {e}")
