@@ -143,7 +143,7 @@ class LocalLLMClient(LLMClient):
         try:
             response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=120)
             response.raise_for_status()
-            return response.json()["choices"][0]["text"]
+            return response.json()["content"]
         except requests.exceptions.Timeout:
             raise RuntimeError("Request to the local language model timed out.")
         except requests.exceptions.RequestException as e:
