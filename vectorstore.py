@@ -22,6 +22,23 @@ class VectorStore:
         return self.store.similarity_search(query, k=k)
 
 
+def clear_qdrant(force_recreate: bool = False):
+    settings = Settings()
+    client = QdrantClient(url=settings.qdrant_url)
+    try:
+        collection_info = client.get_collection(collection_name=settings.qdrant_collection_name)
+        if collection_info.status != CollectionStatus.GREEN:
+            force_recreate = True
+    except Exception:
+        force_recreate = True
+    if force_recreate:
+        st.sidebar.warning("Clearing Qdrant collection...")
+        client.recreate_collection(
+            collection_name=settings.qdrant_collection_name,
+            vectors_config=VectorParams(size=settings.embed_dimension, distance=Distance.COSINE),
+        )
+        st.sidebar.success("QDrant collection cleared.")
+
 def ingest_pdfs_to_qdrant(force_recreate: bool = False):
     settings = Settings()
     client = QdrantClient(url=settings.qdrant_url)

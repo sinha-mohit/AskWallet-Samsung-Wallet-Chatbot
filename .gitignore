@@ -3,3 +3,10 @@ wlt-env
 chat_logs.txt
 chat_logs_*.txt
 *.pyc
+.DS_Store
+*__pycache__/*
+*.cpython*
+__pycache__/ui.cpython-312.pyc
+
+llm_client/__pycache__/*
+.DS_Store
