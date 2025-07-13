@@ -8,8 +8,8 @@ from llm_client.remote import RemoteHuggingFaceClient
 from llm_client.local import LocalLLMClient
 from payload_utils import build_llm_payload  # <-- NEW IMPORT
 
-MEMORY_WINDOW = 6
-SUMMARY_TRIGGER = 12
+MEMORY_WINDOW = 3
+SUMMARY_TRIGGER = 6
 SYSTEM_PROMT = """
 You are a intelligent AI software assistant. 
 - Use ONLY the information from the CONTEXT above to answer the QUESTION.
@@ -74,13 +74,24 @@ def main(log_file):
                     log_section("CONTEXT", f"Context for prompt:\n{context}")
                     # Build payload using new utility
                     history = [m for m in st.session_state.messages if m["role"] in ("user", "assistant")]
+                    summary_msg = None
+                    if len(history) > SUMMARY_TRIGGER:
+                        summary = summarize_history(history[:-MEMORY_WINDOW])
+                        summary_msg = {"role": "system", "content": summary}
+                        log_section("SUMMARY", f"History summarized:\n{summary}")
+                    payload_msgs = []
+                    if summary_msg:
+                        payload_msgs.append(summary_msg)
                     payload = build_llm_payload(
                         user_question=user_prompt,
                         context=context,
                         history=history,
-                        instructions=SYSTEM_PROMT.strip(),
-                        log_file=log_file  # <-- Ensure this is set
+                        log_file=log_file,
+                        instructions=SYSTEM_PROMT.strip()
                     )
+                    # Insert summary message after system prompt if present
+                    if payload_msgs:
+                        payload.insert(1, payload_msgs[0])
                     log_section("PAYLOAD", f"LLM payload messages:\n{payload}")
                     llm = LocalLLMClient(settings.model_id, settings.local_api_url) if use_local else RemoteHuggingFaceClient(settings.model_id, settings.remote_api_url, settings.hf_token)
                     answer = llm.generate(payload)

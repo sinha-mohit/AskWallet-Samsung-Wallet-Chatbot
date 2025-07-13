@@ -5,6 +5,8 @@ Utility for building efficient, clear LLM payloads for chat completion.
 from typing import List, Dict
 from logging_utils import log_section
 
+MEMORY_WINDOW = 4  # Macro for history window size
+
 def build_llm_payload(
     user_question: str,
     context: str,
@@ -17,7 +19,7 @@ def build_llm_payload(
     - history: list of dicts [{'role': 'user', 'content': ...}, {'role': 'assistant', 'content': ...}]
     - context: concise, relevant context string
     - user_question: latest user question
-    Removes duplicate user messages and only includes the latest user message and recent assistant responses.
+    Removes duplicate user messages and only includes the latest user message and recent last MEMORY_WINDOW assistant responses.
     Logs key steps if log_file is provided.
     """
     # Remove duplicate user messages, keep only the latest user message
@@ -33,8 +35,8 @@ def build_llm_payload(
             filtered_history.insert(0, msg)
     if log_file:
         log_section("HISTORY FILTER", f"Filtered history: {filtered_history}")
-    # Limit to last 2 exchanges (user+assistant)
-    trimmed_history = filtered_history[-4:] if len(filtered_history) > 4 else filtered_history
+    # Limit to last MEMORY_WINDOW messages
+    trimmed_history = filtered_history[-MEMORY_WINDOW:] if len(filtered_history) > MEMORY_WINDOW else filtered_history
 
     log_section("HISTORY TRIM", f"Trimmed history: {trimmed_history}")
 
