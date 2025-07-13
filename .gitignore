@@ -2,3 +2,4 @@
 wlt-env
 chat_logs.txt
 chat_logs_*.txt
+*.pyc

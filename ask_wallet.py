@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     embed_dimension: int = 384  # Default for MiniLM-L6-v2 (override manually if needed)
 
     # Local Data and Logging
-    log_file: str = os.getenv("LOG_FILE", "chat_logs.txt")
+    log_file: str = os.getenv("LOG_FILE", "logs/hat_logs.txt")
     data_path: str = os.getenv("DATA_PATH", "data/")
 
     class Config:

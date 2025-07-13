@@ -3,7 +3,6 @@ from logging_utils import setup_logging
 from ui import main
 
 if __name__ == "__main__":
-    settings = Settings()
-    settings.log_file = get_log_filename()
-    setup_logging(settings.log_file)
-    main()
+    log_file = get_log_filename()
+    setup_logging(log_file)
+    main(log_file)

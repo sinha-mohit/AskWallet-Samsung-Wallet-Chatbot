@@ -6,6 +6,11 @@ from pydantic_settings import BaseSettings
 # Load .env file first
 load_dotenv()
 
+# Macros/defaults
+DEFAULT_LOGS_DIR = "logs"
+DEFAULT_LOG_FILE_PREFIX = "chat_logs_"
+DEFAULT_LOG_FILE_EXT = ".txt"
+
 class Settings(BaseSettings):
     """Manages application settings and secrets using Pydantic for validation."""
     use_local_llm: bool = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
@@ -16,13 +21,18 @@ class Settings(BaseSettings):
     qdrant_url: str = os.getenv("QDRANT_URL", "http://qdrant:6333")
     qdrant_collection_name: str = os.getenv("QDRANT_COLLECTION_NAME", "wallet_vectors")
     embed_model: str = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-    embed_dimension: int = 384
-    log_file: str = os.getenv("LOG_FILE", "chat_logs.txt")
+    embed_dimension: int = int(os.getenv("EMBED_DIMENSION", "384"))
     data_path: str = os.getenv("DATA_PATH", "data/")
+    logs_dir: str = os.getenv("LOGS_DIR", DEFAULT_LOGS_DIR)
+    log_file_prefix: str = os.getenv("LOG_FILE_PREFIX", DEFAULT_LOG_FILE_PREFIX)
+    log_file_ext: str = os.getenv("LOG_FILE_EXT", DEFAULT_LOG_FILE_EXT)
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
 
 def get_log_filename():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"chat_logs_{timestamp}.txt"
+    settings = Settings()
+    os.makedirs(settings.logs_dir, exist_ok=True)
+    return os.path.join(settings.logs_dir, f"{settings.log_file_prefix}{timestamp}{settings.log_file_ext}")

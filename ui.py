@@ -24,7 +24,7 @@ You are a intelligent AI software assistant.
 - If QUESTION is not answerable with the given CONTEXT, respond with "I don't know" or "Not enough information".
 """
 
-def main():
+def main(log_file):
     settings = Settings()
     st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬", layout="wide")
     st.title(":brain: AskWallet - AI Assistant")
@@ -54,7 +54,7 @@ def main():
         st.session_state.messages = [
             {"role": "system", "content": SYSTEM_PROMT.strip()}
         ]
-    log_section("STARTUP", f"Session started. Log file: {settings.log_file}")
+    log_section("STARTUP", f"Session started. Log file: {log_file}")
     for msg in st.session_state.messages[1:]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
