@@ -86,3 +86,10 @@ docker-compose up
 
 ### Docker Compose Down
 docker-compose down
+
+
+### Run QDrant
+docker compose -f 'docker-compose.yml' up -d --build 'qdrant' 
+
+### Run Streamlit
+streamlit run main.py --server.port=8501 --server.address=0.0.0.0

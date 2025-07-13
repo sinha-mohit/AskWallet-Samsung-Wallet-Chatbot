@@ -10,6 +10,8 @@ load_dotenv()
 DEFAULT_LOGS_DIR = "logs"
 DEFAULT_LOG_FILE_PREFIX = "chat_logs_"
 DEFAULT_LOG_FILE_EXT = ".txt"
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 100
 
 class Settings(BaseSettings):
     """Manages application settings and secrets using Pydantic for validation."""
@@ -26,6 +28,8 @@ class Settings(BaseSettings):
     logs_dir: str = os.getenv("LOGS_DIR", DEFAULT_LOGS_DIR)
     log_file_prefix: str = os.getenv("LOG_FILE_PREFIX", DEFAULT_LOG_FILE_PREFIX)
     log_file_ext: str = os.getenv("LOG_FILE_EXT", DEFAULT_LOG_FILE_EXT)
+    chunk_size: int = int(os.getenv("CHUNK_SIZE", str(DEFAULT_CHUNK_SIZE)))
+    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", str(DEFAULT_CHUNK_OVERLAP)))
     
     class Config:
         env_file = ".env"

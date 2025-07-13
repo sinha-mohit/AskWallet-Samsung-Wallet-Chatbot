@@ -21,6 +21,7 @@ class VectorStore:
     def retrieve(self, query: str, k: int = 3) -> list:
         return self.store.similarity_search(query, k=k)
 
+
 def ingest_pdfs_to_qdrant(force_recreate: bool = False):
     settings = Settings()
     client = QdrantClient(url=settings.qdrant_url)
@@ -41,7 +42,7 @@ def ingest_pdfs_to_qdrant(force_recreate: bool = False):
     st.sidebar.info("Loading documents...")
     loader = DirectoryLoader(settings.data_path, glob='*.pdf', loader_cls=PyPDFLoader, show_progress=True)
     documents = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
     text_chunks = splitter.split_documents(documents)
     st.sidebar.info(f"Embedding and upserting {len(text_chunks)} chunks...")
     Qdrant.from_documents(
