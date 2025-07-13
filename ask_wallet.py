@@ -77,7 +77,15 @@ def get_log_filename():
     return f"chat_logs_{timestamp}.txt"
 
 settings.log_file = get_log_filename()
-logging.basicConfig(filename=settings.log_file, level=logging.INFO, format='%(asctime)s %(message)s')
+logging.basicConfig(
+    filename=settings.log_file,
+    level=logging.INFO,
+    format='\n%(asctime)s | %(levelname)s | %(message)s\n'  # Newline before each log entry for readability
+)
+
+
+def log_section(tag: str, message: str):
+    logging.info(f"\n{'='*20} [{tag}] {'='*20}\n{message}\n{'='*50}\n")
 
 
 # === 3. Embedding Model Wrapper === #
@@ -313,12 +321,15 @@ def main():
             {"role": "system", "content": SYSTEM_PROMT.strip()}
         ]
 
+    log_section("STARTUP", f"Session started. Log file: {settings.log_file}")
+
     for msg in st.session_state.messages[1:]:  # Skip system prompt for display
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     if user_prompt := st.chat_input("💬 Ask your question here..."):
         st.session_state.messages.append({"role": "user", "content": user_prompt})
+        log_section("USER INPUT", f"User prompt received:\n{user_prompt}")
         with st.chat_message("user"):
             st.markdown(user_prompt)
 
@@ -328,30 +339,29 @@ def main():
                     # 1. Retrieve documents
                     vectorstore = get_vectorstore()
                     retrieved_docs = vectorstore.retrieve(user_prompt)
-                    logging.info(f"Retrieved documents: {[doc.metadata for doc in retrieved_docs]}")
+                    log_section("VECTOR SEARCH", f"Retrieved {len(retrieved_docs)} documents for query: {user_prompt}\nMetadata: {[doc.metadata for doc in retrieved_docs]}")
 
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
-                    logging.info(f"Context for prompt: {context}")
+                    log_section("CONTEXT", f"Context for prompt:\n{context}")
 
                     # 2. Advanced context and memory management
                     messages = st.session_state.messages.copy()
-                    # Summarize if history is long
                     summary_msg = None
                     if len(messages) > SUMMARY_TRIGGER:
                         summary = summarize_history(messages[:-MEMORY_WINDOW])
                         summary_msg = {"role": "system", "content": summary}
-                    # Only keep last MEMORY_WINDOW user/assistant messages
+                        log_section("SUMMARY", f"History summarized:\n{summary}")
                     window_msgs = [m for m in messages if m["role"] == "system"]
                     window_msgs += [m for m in messages if m["role"] in ("user", "assistant")][-MEMORY_WINDOW:]
                     if summary_msg:
-                        window_msgs.insert(1, summary_msg)  # After main system prompt
-                    # Add context as a system message
+                        window_msgs.insert(1, summary_msg)
                     window_msgs.append({"role": "system", "content": f"CONTEXT:\n---------\n{context}\n---------"})
+                    log_section("PAYLOAD", f"LLM payload messages:\n{window_msgs}")
 
                     # 3. Generate Answer
                     llm = get_llm_client(use_local)
                     answer = llm.generate(window_msgs)
-                    logging.info(f"Generated answer: {answer}")
+                    log_section("LLM RESPONSE", f"Generated answer:\n{answer}")
 
                     # 4. Format and Display Response
                     sources = format_source_documents(retrieved_docs)
@@ -359,11 +369,11 @@ def main():
                     st.markdown(response)
 
                     st.session_state.messages.append({"role": "assistant", "content": answer})
-                    logging.info(f"USER: {user_prompt}\nASSISTANT: {answer}\n")
+                    log_section("CHAT HISTORY", f"USER: {user_prompt}\nASSISTANT: {answer}\nFull history: {st.session_state.messages}")
 
         except Exception as e:
+            log_section("ERROR", f"Exception occurred:\n{traceback.format_exc()}")
             st.error(f"❌ An error occurred: {e}")
-            logging.error(f"Exception occurred: {traceback.format_exc()}")
 
 if __name__ == "__main__":
     main()
