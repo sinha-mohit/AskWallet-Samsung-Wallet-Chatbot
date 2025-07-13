@@ -6,6 +6,7 @@ from vectorstore import VectorStore, ingest_pdfs_to_qdrant
 from summarization import summarize_history
 from llm_client.remote import RemoteHuggingFaceClient
 from llm_client.local import LocalLLMClient
+from payload_utils import build_llm_payload  # <-- NEW IMPORT
 
 MEMORY_WINDOW = 6
 SUMMARY_TRIGGER = 12
@@ -71,20 +72,18 @@ def main(log_file):
                     log_section("VECTOR SEARCH", f"Retrieved {len(retrieved_docs)} documents for query: {user_prompt}\nMetadata: {[doc.metadata for doc in retrieved_docs]}")
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
                     log_section("CONTEXT", f"Context for prompt:\n{context}")
-                    messages = st.session_state.messages.copy()
-                    summary_msg = None
-                    if len(messages) > SUMMARY_TRIGGER:
-                        summary = summarize_history(messages[:-MEMORY_WINDOW])
-                        summary_msg = {"role": "system", "content": summary}
-                        log_section("SUMMARY", f"History summarized:\n{summary}")
-                    window_msgs = [m for m in messages if m["role"] == "system"]
-                    window_msgs += [m for m in messages if m["role"] in ("user", "assistant")][-MEMORY_WINDOW:]
-                    if summary_msg:
-                        window_msgs.insert(1, summary_msg)
-                    window_msgs.append({"role": "system", "content": f"CONTEXT:\n---------\n{context}\n---------"})
-                    log_section("PAYLOAD", f"LLM payload messages:\n{window_msgs}")
+                    # Build payload using new utility
+                    history = [m for m in st.session_state.messages if m["role"] in ("user", "assistant")]
+                    payload = build_llm_payload(
+                        user_question=user_prompt,
+                        context=context,
+                        history=history,
+                        instructions=SYSTEM_PROMT.strip(),
+                        log_file=log_file  # <-- Ensure this is set
+                    )
+                    log_section("PAYLOAD", f"LLM payload messages:\n{payload}")
                     llm = LocalLLMClient(settings.model_id, settings.local_api_url) if use_local else RemoteHuggingFaceClient(settings.model_id, settings.remote_api_url, settings.hf_token)
-                    answer = llm.generate(window_msgs)
+                    answer = llm.generate(payload)
                     log_section("LLM RESPONSE", f"Generated answer:\n{answer}")
                     response = f"🧐 **Answer:**\n\n{answer}\n\n---\n"
                     st.markdown(response)
