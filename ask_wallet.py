@@ -6,6 +6,7 @@ import requests
 from typing import List
 from tempfile import NamedTemporaryFile
 from abc import ABC, abstractmethod
+import datetime
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
@@ -70,6 +71,12 @@ settings = Settings()
 assert settings.hf_token or settings.use_local_llm, "HF_TOKEN is required unless USE_LOCAL_LLM is True"
 
 # === 2. Setup Logging === #
+def get_log_filename():
+    """Generate a unique log filename with timestamp."""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"chat_logs_{timestamp}.txt"
+
+settings.log_file = get_log_filename()
 logging.basicConfig(filename=settings.log_file, level=logging.INFO, format='%(asctime)s %(message)s')
 
 
@@ -89,7 +96,7 @@ class EmbeddingModel(Embeddings):
 class LLMClient(ABC):
     """Abstract base class for LLM clients."""
     @abstractmethod
-    def generate(self, prompt: str) -> str:
+    def generate(self, messages: List[dict]) -> str:
         pass
 
 class RemoteHuggingFaceClient(LLMClient):
@@ -99,13 +106,10 @@ class RemoteHuggingFaceClient(LLMClient):
         self.api_url = api_url
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, messages: List[dict]) -> str:
         payload = {
             "model": self.model_id, "stream": False, "max_tokens": 1024, "temperature": 0.3, "top_p": 0.9,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMT.strip()},
-                {"role": "user", "content": prompt.strip()}
-            ],
+            "messages": messages,
             "stop": None
         }
         logging.info(f"Sending payload to REMOTE LLM API: {payload}")
@@ -126,8 +130,11 @@ class LocalLLMClient(LLMClient):
         self.api_url = api_url  # Example: http://localhost:8000/v1/completions
         self.headers = {"Content-Type": "application/json"}
 
-    def generate(self, prompt: str) -> str:
-        full_prompt = f"{SYSTEM_PROMT.strip()}\n\n{prompt.strip()}"
+    def generate(self, messages: List[dict]) -> str:
+        # Build prompt from chat history
+        system_prompt = next((m["content"] for m in messages if m["role"] == "system"), SYSTEM_PROMT.strip())
+        user_and_assistant = "\n\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in messages if m["role"] != "system"])
+        full_prompt = f"{system_prompt}\n\n{user_and_assistant}"
 
         payload = {
             "model": self.model_id,
@@ -244,6 +251,29 @@ def format_source_documents(docs: List[Document]) -> str:
         for doc in docs
     ])
 
+MEMORY_WINDOW = 6  # Number of recent messages to keep in LLM payload
+SUMMARY_TRIGGER = 12  # Summarize if history exceeds this
+
+def summarize_history(messages: List[dict]) -> str:
+    """Advanced summarization of older chat history using LLM."""
+    history = [m for m in messages if m["role"] in ("user", "assistant")]
+    if not history:
+        return ""
+    # Use a simple concatenation as fallback
+    raw_summary = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in history])
+    # Use LLM to summarize the raw history
+    llm = get_llm_client(settings.use_local_llm)
+    summary_prompt = [
+        {"role": "system", "content": "You are a helpful assistant. Summarize the following conversation history for context retention. Be concise and preserve important details."},
+        {"role": "user", "content": raw_summary}
+    ]
+    try:
+        summary = llm.generate(summary_prompt)
+        return f"Summary of previous conversation:\n{summary}"
+    except Exception as e:
+        logging.error(f"Summarization failed: {e}")
+        return f"Summary of previous conversation:\n{raw_summary}"
+
 # === 7. Streamlit App UI (with UX Improvements) === #
 def main():
     st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬", layout="wide")
@@ -279,9 +309,11 @@ def main():
 
     # --- Main Chat Interface ---
     if "messages" not in st.session_state:
-        st.session_state.messages = []
+        st.session_state.messages = [
+            {"role": "system", "content": SYSTEM_PROMT.strip()}
+        ]
 
-    for msg in st.session_state.messages:
+    for msg in st.session_state.messages[1:]:  # Skip system prompt for display
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
@@ -296,28 +328,37 @@ def main():
                     # 1. Retrieve documents
                     vectorstore = get_vectorstore()
                     retrieved_docs = vectorstore.retrieve(user_prompt)
-                    # logging.info(f"Retrieved {len(retrieved_docs)} documents for query: {user_prompt}")
                     logging.info(f"Retrieved documents: {[doc.metadata for doc in retrieved_docs]}")
 
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
                     logging.info(f"Context for prompt: {context}")
-                                  
-                    # 2. Build Prompt
-                    prompt = build_prompt(context, user_prompt)
-                    logging.info(f"Generated prompt: {prompt}")
-                    
+
+                    # 2. Advanced context and memory management
+                    messages = st.session_state.messages.copy()
+                    # Summarize if history is long
+                    summary_msg = None
+                    if len(messages) > SUMMARY_TRIGGER:
+                        summary = summarize_history(messages[:-MEMORY_WINDOW])
+                        summary_msg = {"role": "system", "content": summary}
+                    # Only keep last MEMORY_WINDOW user/assistant messages
+                    window_msgs = [m for m in messages if m["role"] == "system"]
+                    window_msgs += [m for m in messages if m["role"] in ("user", "assistant")][-MEMORY_WINDOW:]
+                    if summary_msg:
+                        window_msgs.insert(1, summary_msg)  # After main system prompt
+                    # Add context as a system message
+                    window_msgs.append({"role": "system", "content": f"CONTEXT:\n---------\n{context}\n---------"})
+
                     # 3. Generate Answer
                     llm = get_llm_client(use_local)
-                    answer = llm.generate(prompt)
+                    answer = llm.generate(window_msgs)
                     logging.info(f"Generated answer: {answer}")
-                    
+
                     # 4. Format and Display Response
                     sources = format_source_documents(retrieved_docs)
-                    # response = f"🧐 **Answer:**\n\n{answer}\n\n---\n### Sources Used:\n{sources}"
                     response = f"🧐 **Answer:**\n\n{answer}\n\n---\n"
                     st.markdown(response)
-                    
-                    st.session_state.messages.append({"role": "assistant", "content": response})
+
+                    st.session_state.messages.append({"role": "assistant", "content": answer})
                     logging.info(f"USER: {user_prompt}\nASSISTANT: {answer}\n")
 
         except Exception as e:

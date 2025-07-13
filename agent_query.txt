@@ -1,0 +1,24 @@
+I am trying to make a api and documentation spec AI assistant tool chat bot.
+
+This AI chatbot will help developers to ask relevant software related queries.
+
+there are two modes of llm. 1 is calling hugginface interface api for local development and another is calling locally hosted llm for office work where system is behin proxy network.
+
+the locally llm is hosted in a different server via llama.cpp
+
+based on this information, scan all the code files.
+
+
+
+
+
+
+right now, query from every user is considered as unique and the reposne does not consider chat history while reposnding to any prompt.
+
+can we implement this efficiently and correctly following all the design principles and SOLID principles
+
+
+obviously we cannot send all the history with the payload to llm, so how efficiently send the past history 
+along with relevant context and prompt
+
+have memory limits and advance context management
