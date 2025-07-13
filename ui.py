@@ -3,10 +3,9 @@ from config import Settings
 from logging_utils import log_section
 from embedding import EmbeddingModel
 from vectorstore import VectorStore, ingest_pdfs_to_qdrant
-from summarization import summarize_history
 from llm_client.remote import RemoteHuggingFaceClient
 from llm_client.local import LocalLLMClient
-from payload_utils import build_llm_payload  # <-- NEW IMPORT
+from llm_orchestrator import LLMOrchestrator
 
 MEMORY_WINDOW = 3
 SUMMARY_TRIGGER = 6
@@ -22,8 +21,9 @@ You are a intelligent AI software assistant.
 - If the CONTEXT is too long, focus on the most relevant parts.
 - Try to undertand the CONTEXT and QUESTION before answering.
 - Try to understand the user's intent from the QUESTION.
-- If QUESTION is not answerable with the given CONTEXT, respond with "I don't know" or "Not enough information".
+- If QUESTION is not answerable with the given CONTEXT, respond with "I don't know!" or "Not enough information!".
 """
+
 
 def main(log_file):
     settings = Settings()
@@ -72,30 +72,17 @@ def main(log_file):
                     log_section("VECTOR SEARCH", f"Retrieved {len(retrieved_docs)} documents for query: {user_prompt}\nMetadata: {[doc.metadata for doc in retrieved_docs]}")
                     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
                     log_section("CONTEXT", f"Context for prompt:\n{context}")
-                    # Build payload using new utility
                     history = [m for m in st.session_state.messages if m["role"] in ("user", "assistant")]
-                    summary_msg = None
-                    if len(history) > SUMMARY_TRIGGER:
-                        summary = summarize_history(history[:-MEMORY_WINDOW])
-                        summary_msg = {"role": "system", "content": summary}
-                        log_section("SUMMARY", f"History summarized:\n{summary}")
-                    payload_msgs = []
-                    if summary_msg:
-                        payload_msgs.append(summary_msg)
-                    payload = build_llm_payload(
-                        user_question=user_prompt,
-                        context=context,
-                        history=history,
-                        log_file=log_file,
-                        instructions=SYSTEM_PROMT.strip()
-                    )
-                    # Insert summary message after system prompt if present
-                    if payload_msgs:
-                        payload.insert(1, payload_msgs[0])
-                    log_section("PAYLOAD", f"LLM payload messages:\n{payload}")
-                    llm = LocalLLMClient(settings.model_id, settings.local_api_url) if use_local else RemoteHuggingFaceClient(settings.model_id, settings.remote_api_url, settings.hf_token)
-                    answer = llm.generate(payload)
+
+                    llm_client = LocalLLMClient(settings.model_id, settings.local_api_url) if use_local else RemoteHuggingFaceClient(settings.model_id, settings.remote_api_url, settings.hf_token)
+                    orchestrator = LLMOrchestrator(settings, log_file, SYSTEM_PROMT, llm_client)
+                    
+                    payload_msg = orchestrator.build_payload(user_prompt, context, history)
+                    log_section("PAYLOAD_MSG", f"LLM payload messages:\n{payload_msg}")
+                    
+                    answer = orchestrator.get_response(payload_msg)
                     log_section("LLM RESPONSE", f"Generated answer:\n{answer}")
+                    
                     response = f"🧐 **Answer:**\n\n{answer}\n\n---\n"
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": answer})
