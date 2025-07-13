@@ -15,7 +15,8 @@ DEFAULT_CHUNK_OVERLAP = 100
 
 class Settings(BaseSettings):
     """Manages application settings and secrets using Pydantic for validation."""
-    use_local_llm: bool = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
+    use_local_llm: bool = os.getenv("USE_LOCAL_LLM", "false").strip().lower() == "true"
+
     hf_token: str = os.getenv("HF_TOKEN", "")
     model_id: str = os.getenv("MODEL_ID", "meta-llama/llama-3-8b-instruct")
     remote_api_url: str = os.getenv("REMOTE_API_URL", "https://router.huggingface.co/novita/v3/openai/chat/completions")
@@ -34,6 +35,13 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
+    def get_llm_client(self, use_local):
+        if use_local:
+            from llm_client.local import LocalLLMClient
+            return LocalLLMClient(self.model_id, self.local_api_url)
+        from llm_client.remote import RemoteHuggingFaceClient
+        return RemoteHuggingFaceClient(self.model_id, self.remote_api_url, self.hf_token)
 
 def get_log_filename():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

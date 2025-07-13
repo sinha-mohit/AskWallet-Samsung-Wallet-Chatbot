@@ -3,9 +3,12 @@ from config import Settings
 from logging_utils import log_section
 from embedding import EmbeddingModel
 from vectorstore import VectorStore, ingest_pdfs_to_qdrant
+from dotenv import load_dotenv
 from llm_client.remote import RemoteHuggingFaceClient
 from llm_client.local import LocalLLMClient
 from llm_orchestrator import LLMOrchestrator
+# Update deprecated langchain imports
+from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
 
 MEMORY_WINDOW = 3
 SUMMARY_TRIGGER = 6
@@ -26,7 +29,12 @@ You are a intelligent AI software assistant.
 
 
 def main(log_file):
+    # load environment variables
+    load_dotenv()
+
     settings = Settings()
+    print("Using local LLM:", settings.use_local_llm)
+
     st.set_page_config(page_title="AskWallet Chatbot", page_icon="💬", layout="wide")
     st.title(":brain: AskWallet - AI Assistant")
     st.sidebar.title("Settings & Controls")
@@ -74,7 +82,7 @@ def main(log_file):
                     log_section("CONTEXT", f"Context for prompt:\n{context}")
                     history = [m for m in st.session_state.messages if m["role"] in ("user", "assistant")]
 
-                    llm_client = LocalLLMClient(settings.model_id, settings.local_api_url) if use_local else RemoteHuggingFaceClient(settings.model_id, settings.remote_api_url, settings.hf_token)
+                    llm_client = settings.get_llm_client(use_local)
                     orchestrator = LLMOrchestrator(settings, log_file, SYSTEM_PROMT, llm_client)
                     
                     payload_msg = orchestrator.build_payload(user_prompt, context, history)

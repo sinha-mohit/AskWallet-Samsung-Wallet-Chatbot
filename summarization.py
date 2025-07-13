@@ -1,7 +1,5 @@
 import logging
 from logging_utils import log_section
-from llm_client.remote import RemoteHuggingFaceClient
-from llm_client.local import LocalLLMClient
 from config import Settings
 
 def summarize_history(messages: list) -> str:
@@ -10,7 +8,7 @@ def summarize_history(messages: list) -> str:
     if not history:
         return ""
     raw_summary = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in history])
-    llm = LocalLLMClient(settings.model_id, settings.local_api_url) if settings.use_local_llm else RemoteHuggingFaceClient(settings.model_id, settings.remote_api_url, settings.hf_token)
+    llm = settings.get_llm_client(settings.use_local_llm)
     summary_prompt = [
         {"role": "system", "content": "You are a helpful assistant. Summarize the following conversation history for context retention. Be concise and preserve important details."},
         {"role": "user", "content": raw_summary}
