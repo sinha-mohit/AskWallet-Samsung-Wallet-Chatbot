@@ -59,8 +59,19 @@ def ingest_pdfs_to_qdrant(force_recreate: bool = False):
     st.sidebar.info("Loading documents...")
     loader = DirectoryLoader(settings.data_path, glob='*.pdf', loader_cls=PyPDFLoader, show_progress=True)
     documents = loader.load()
+    st.sidebar.info(f"Loaded {len(documents)} documents from {settings.data_path}")
+
+    # print(documents[0].page_content)  # Debug: print first document's content
     splitter = RecursiveCharacterTextSplitter(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
-    text_chunks = splitter.split_documents(documents)
+    
+    # for each doc in documents, save only page_content
+    documents_contents = [Document(page_content=doc.page_content) for doc in documents]
+    text_chunks = splitter.split_documents(documents_contents)
+
+    print(f"Total text chunks: {len(text_chunks)}")  # Debug: print number of text chunks
+    print("Example chunk:", text_chunks[0])  # Debug: print first 100 chars of first chunk
+    # print("chunk example:", text_chunks[0].page_content[:100])  # Debug: print first 100 chars of first chunk
+    
     st.sidebar.info(f"Embedding and upserting {len(text_chunks)} chunks...")
     Qdrant.from_documents(
         documents=text_chunks,
