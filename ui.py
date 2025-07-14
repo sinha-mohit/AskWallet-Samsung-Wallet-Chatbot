@@ -61,7 +61,7 @@ def main(log_file):
         st.sidebar.success("Vector DB cleared!")
 
     # Upload and process PDF
-    uploaded_file = st.sidebar.file_uploader("Upload PDF to Vector DB", type=["pdf"])
+    uploaded_file = st.sidebar.file_uploader("Upload PDF to Vector DB")
 
     if uploaded_file is not None:
         file_hash = compute_file_hash(uploaded_file)
